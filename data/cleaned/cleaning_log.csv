@@ -1,0 +1,8 @@
+step,column,action
+standardise_column_names,ALL,lowercase + underscore
+convert_to_datetime,policy_bind_date,object → datetime64
+convert_to_datetime,incident_date,object → datetime64
+encode_target,fraud_reported,Y/N → 1/0
+cast_dtype,insured_zip,int64 → string
+drop_column,policy_number,PERMANENTLY DROPPED — primary key / high cardinality
+drop_column,incident_location,PERMANENTLY DROPPED — primary key / high cardinality
