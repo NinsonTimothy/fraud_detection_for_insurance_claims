@@ -1,0 +1,17 @@
+column,level,method,mapping
+insured_sex,binary,LabelEncoder,"{'FEMALE': np.int64(0), 'MALE': np.int64(1)}"
+property_damage,binary,LabelEncoder,"{'NO': np.int64(0), 'YES': np.int64(1)}"
+police_report_available,binary,LabelEncoder,"{'NO': np.int64(0), 'YES': np.int64(1)}"
+insured_education_level,ordinal,OrdinalEncoder,"['JD', 'High School', 'Associate', 'College', 'Masters', 'PhD', 'MD']"
+incident_severity,ordinal,OrdinalEncoder,"['Trivial Damage', 'Minor Damage', 'Major Damage', 'Total Loss']"
+insured_occupation,nominal,OneHotEncoder (drop_first=True),dummies
+insured_hobbies,nominal,OneHotEncoder (drop_first=True),dummies
+insured_relationship,nominal,OneHotEncoder (drop_first=True),dummies
+incident_type,nominal,OneHotEncoder (drop_first=True),dummies
+collision_type,nominal,OneHotEncoder (drop_first=True),dummies
+authorities_contacted,nominal,OneHotEncoder (drop_first=True),dummies
+policy_state,nominal,OneHotEncoder (drop_first=True),dummies
+incident_state,nominal,OneHotEncoder (drop_first=True),dummies
+auto_region,nominal,OneHotEncoder (drop_first=True),dummies
+hour_bucket,nominal,OneHotEncoder (drop_first=True),dummies
+zip3_risk_tier,nominal,OneHotEncoder (drop_first=True),dummies

@@ -1,0 +1,28 @@
+feature,scaler,reason
+months_as_customer,StandardScaler,Near-normal distribution
+age,StandardScaler,Near-normal distribution
+policy_annual_premium,StandardScaler,Near-normal distribution
+policy_deductable,MinMaxScaler,Bounded integer / duration
+incident_hour_of_the_day,MinMaxScaler,Bounded integer / duration
+number_of_vehicles_involved,MinMaxScaler,Bounded integer / duration
+bodily_injuries,MinMaxScaler,Bounded integer / duration
+witnesses,MinMaxScaler,Bounded integer / duration
+policy_age_at_incident_days,MinMaxScaler,Bounded integer / duration
+csl_per_person,MinMaxScaler,Bounded integer / duration
+csl_total,MinMaxScaler,Bounded integer / duration
+car_age,MinMaxScaler,Bounded integer / duration
+capital_gains,RobustScaler,Skewed / outlier-heavy claim feature
+capital_loss,RobustScaler,Skewed / outlier-heavy claim feature
+injury_claim,RobustScaler,Skewed / outlier-heavy claim feature
+property_claim,RobustScaler,Skewed / outlier-heavy claim feature
+vehicle_claim,RobustScaler,Skewed / outlier-heavy claim feature
+umbrella_limit,RobustScaler,Skewed / outlier-heavy claim feature
+claim_to_premium_ratio,RobustScaler,Skewed / outlier-heavy claim feature
+vehicle_claim_pct,RobustScaler,Skewed / outlier-heavy claim feature
+injury_claim_pct,RobustScaler,Skewed / outlier-heavy claim feature
+is_major_damage,None,"Binary flag — already in {0,1}"
+is_highrisk_hobby,None,"Binary flag — already in {0,1}"
+is_no_witness,None,"Binary flag — already in {0,1}"
+is_new_customer,None,"Binary flag — already in {0,1}"
+is_exec_occupation,None,"Binary flag — already in {0,1}"
+is_weekend,None,"Binary flag — already in {0,1}"

@@ -1,0 +1,14 @@
+feature,group,fraud_rate_top_decile,lift,nulls,fraud_rate_flagged
+policy_age_at_incident_days,Temporal,0.23,0.93,0,
+car_age,Temporal,0.281,1.14,0,
+is_weekend,Temporal,,1.09,0,0.268
+claim_to_premium_ratio,Ratio,0.32,1.3,0,
+vehicle_claim_pct,Ratio,0.27,1.09,0,
+injury_claim_pct,Ratio,0.287,1.16,0,
+is_new_customer,Binary flags,,0.95,0,0.235
+is_major_damage,Binary flags,,2.45,0,0.605
+is_highrisk_hobby,Binary flags,,3.2,0,0.79
+is_no_witness,Binary flags,,0.81,0,0.201
+is_exec_occupation,Binary flags,,1.49,0,0.368
+csl_per_person,CSL split,0.217,0.88,0,
+csl_total,CSL split,0.217,0.88,0,

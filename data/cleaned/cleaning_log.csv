@@ -4,5 +4,11 @@ convert_to_datetime,policy_bind_date,object → datetime64
 convert_to_datetime,incident_date,object → datetime64
 encode_target,fraud_reported,Y/N → 1/0
 cast_dtype,insured_zip,int64 → string
+fix_typo,auto_model,Forrestor → Forester (28 rows)
+fill_missing,collision_type,"NaN → ""Not Applicable"" (business-logic missing, not imputed)"
+impute_mode,property_damage,"NaN → mode (""NO"") — no fraud-rate association found"
+impute_mode,police_report_available,"NaN → mode (""NO"") — no fraud-rate association found"
+impute_mode,authorities_contacted,"NaN → mode (""Police"") — no fraud-rate association found"
+drop_column,_c39,"PHANTOM COLUMN — 100% null, artifact of raw CSV export"
 drop_column,policy_number,PERMANENTLY DROPPED — primary key / high cardinality
 drop_column,incident_location,PERMANENTLY DROPPED — primary key / high cardinality
