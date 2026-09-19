@@ -173,8 +173,31 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     bind_date = pd.to_datetime(df["policy_bind_date"], errors="coerce")
     incident_date = pd.to_datetime(df["incident_date"], errors="coerce")
     policy_age_days = (incident_date - bind_date).dt.days
-    out["policy_age_at_incident_days"] = policy_age_days.fillna(policy_age_days.median() if policy_age_days.notna().any() else 365)
-    out["is_new_customer"] = (out["policy_age_at_incident_days"] < 30).astype(int)
+    # SH-06: clip(lower=0) — one row in the cleaned dataset has
+    # incident_date before policy_bind_date (a -20 day "age"), a data
+    # quality artifact, not a real pre-bind claim.
+    out["policy_age_at_incident_days"] = policy_age_days.fillna(policy_age_days.median() if policy_age_days.notna().any() else 365).clip(lower=0)
+
+    # SH-06 (fixed): is_new_customer used to threshold
+    # `policy_age_at_incident_days < 30`. Reproduced against the cleaned
+    # dataset: that field's mean is ~4,739 days (~13 years) and its "new"
+    # group is near-empty at EVERY day-threshold tested (0.2% of rows at
+    # 30 days, only 1.7% even at 180 days) — incident_date/policy_bind_date
+    # in this dataset don't actually encode short-tenure relationships, so
+    # no choice of day-threshold on this field can produce a usable
+    # feature. `months_as_customer` (a real, directly-supplied raw field,
+    # not derived from two dates) shows the documented "new policy, big
+    # claim" pattern properly: fraud rate rises from the 24.6% baseline to
+    # 29.2%/34.4%/34.1% at <12/<18/<24-month cutoffs, with reasonably
+    # sized groups (24/32/41 rows). A Fisher exact test across a 6-36
+    # month grid found the strongest (though not conventionally
+    # significant at this sample size — lowest p~=0.17 at 21 months)
+    # separation around 18-24 months; 24 months (a standard "new business"
+    # underwriting window) is used here. See docs/REBUILD_NOTES.md for the
+    # full grid. This is a materially weak, low-confidence signal — kept
+    # because it's directionally consistent with the literature and does
+    # no harm, not because it's a strong predictor in this small dataset.
+    out["is_new_customer"] = (df["months_as_customer"] < 24).astype(int)
     out["vehicle_age_at_incident"] = (incident_date.dt.year.fillna(incident_date.dt.year.median() if incident_date.notna().any() else 2015) - df["auto_year"]).clip(lower=0)
 
     # --- Behavioral / structural flags (real signal) ---

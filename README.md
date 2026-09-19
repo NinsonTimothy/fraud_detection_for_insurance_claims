@@ -97,15 +97,33 @@ aegis-risk-engine/
 └── README.md                                            # this file
 ```
 
+## Success metrics, in priority order
+
+This project optimizes and reports in this order: **Recall > F1 > PR-AUC >
+ROC-AUC > Accuracy.** Missing a real fraud case (a false negative) is
+costlier than one extra analyst review of a legitimate claim (a false
+positive — see `backend/app/ml/cost_threshold.py`'s disclosed cost model),
+so recall is ranked first; F1 keeps precision from being ignored entirely;
+ROC-AUC/accuracy are reported for completeness but are not what model or
+threshold choices are optimized against. Every model-comparison and
+champion-selection claim in this repo is read through this ordering, not
+through "whichever number is highest."
+
 ## Key findings to lead with in a defense
 
-1. **Internal performance is honest but modest** (~0.67 ROC-AUC, 5-fold CV,
-   full-pipeline-refit-per-fold) — lower than a leaked evaluation would show,
-   deliberately, because the leak was found and fixed (`REBUILD_NOTES.md` §2).
-2. **The model does not generalize to Oracle** (ROC-AUC ≈0.48, statistically
-   random) — but a stress test proves Oracle itself IS learnable fraud data
-   (fresh XGBoost reaches ROC-AUC ≈0.81 on Oracle's own fields). This is a
-   feature-availability problem, precisely quantified, not a data problem.
+1. **Internal performance is honest, not leaked.** Every reported number
+   (holdout and 5-fold CV, full-pipeline-refit-per-fold) is generated from
+   `models/metrics.json` — see that file for current figures, never a
+   hand-typed number here. Three real leaks were found and fixed during
+   this rebuild (ZIP-prefix target-encoding leakage, a missing-data parsing
+   bug, and threshold/SHAP selection on the test set — `REBUILD_NOTES.md`
+   §§6-8) and the current numbers are the honest result of fixing all
+   three, not a "deliberately modest" placeholder.
+2. **The model does not generalize to Oracle** (ROC-AUC ≈0.47-0.50,
+   statistically random) — but a stress test proves Oracle itself IS
+   learnable fraud data (fresh models reach ROC-AUC ≈0.81-0.82 on Oracle's
+   own fields). This is a feature-availability problem, precisely
+   quantified, not a data problem.
 3. **Two specific features are flagged as not safe to treat as real signal**
    (`is_highrisk_hobby`/`is_exec_occupation` — dataset artifacts) and are
    individually removable in one line each. A third, `zip3_risk_tier`, was
@@ -115,3 +133,11 @@ aegis-risk-engine/
 4. **What real SIU tooling has that this doesn't** (prior-claims history,
    fault attribution, network-link analysis) is named explicitly as an
    architectural ceiling this dataset cannot support — not glossed over.
+5. **Champion model (Random Forest) was chosen by measured evidence, not
+   by default.** The working assumption going in was a regularised
+   Logistic Regression champion; a paired, same-fold nested-CV comparison
+   (`docs/REBUILD_NOTES.md` §11) showed Random Forest winning on this
+   project's own top-priority metrics — recall and F1 — by a margin that
+   holds up under a paired significance test (p<0.05 on both), so Random
+   Forest was kept as champion with Logistic Regression reported as the
+   runner-up.

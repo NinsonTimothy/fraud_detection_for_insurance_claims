@@ -268,3 +268,107 @@ model_comparison numbers are unchanged from §7's. What changed is the
 METHODOLOGY, not (in this instance) the resulting number — but the
 process is now honest regardless of whether a future retrain or
 hyperparameter change happens to move that agreement.
+
+### 9. `is_new_customer` was thresholding a near-degenerate field (SH-06)
+
+`is_new_customer` used to be `policy_age_at_incident_days < 30`, where
+`policy_age_at_incident_days = incident_date - policy_bind_date`. Reproduced
+against the cleaned dataset: this field's mean is ~4,739 days (~13 years),
+and its "new" group is near-empty at every day-threshold tested — 0.2% of
+rows at 30 days, only 1.7% even at 180 days — with fraud rate actually
+LOWER in the "new" group than the "old" group at every threshold under
+90 days. `incident_date`/`policy_bind_date` in this dataset simply don't
+encode a real short-tenure relationship, so no choice of day-threshold on
+that field could have produced a usable feature — the ticket's framing
+("threshold choice") undersold the actual problem: the wrong field was
+being thresholded.
+
+`months_as_customer` — a real, directly-supplied raw field (not derived
+from two dates) — shows the documented "new policy, big claim" pattern
+properly. A Fisher-exact-test grid over 6-36 month cutoffs:
+
+| threshold | n (new) | fraud (new) | fraud (rest) | delta | Fisher p |
+|---|---|---|---|---|---|
+| 6mo | 13 (1.3%) | 15.4% | 24.8% | -0.094 | 0.746 |
+| 12mo | 24 (2.4%) | 29.2% | 24.6% | +0.046 | 0.633 |
+| 18mo | 32 (3.2%) | 34.4% | 24.4% | +0.100 | 0.212 |
+| 21mo | 37 (3.7%) | 35.1% | 24.3% | +0.108 | 0.172 |
+| 24mo | 41 (4.1%) | 34.1% | 24.3% | +0.099 | 0.194 |
+| 36mo | 66 (6.6%) | 27.3% | 24.5% | +0.028 | 0.658 |
+
+None reach conventional significance at this sample size (lowest p~=0.17
+at 21 months) — reported honestly as a directionally-consistent but
+low-confidence signal, not a strong one. **Fix:** `is_new_customer` is now
+`months_as_customer < 24` (24 months, a standard "new business"
+underwriting window, near the empirical peak and with a reasonably sized,
+stable group). Also clipped `policy_age_at_incident_days` at 0 — one row
+had a negative "age" (incident_date before policy_bind_date), a data
+quality artifact, not a real pre-bind claim.
+
+**Effect on metrics.** Retrained on top of PB-02/SH-01/PB-03: holdout
+ROC-AUC for the shipped Random Forest moved to 0.849 (see
+`models/metrics.json`), `n_features` unchanged at 72 (one column's
+DEFINITION changed, not the count).
+
+### 10. SMOTE + class_weight together: kept, evidence-backed (SH-03)
+
+Every shipped/compared model uses BOTH SMOTE oversampling AND
+`class_weight="balanced"`/`"balanced_subsample"` simultaneously — two
+different techniques for the same imbalance problem, worth checking
+whether one alone would do. `backend/app/ml/model_selection_experiments.py`
+runs a paired (identical 5 folds), refit-per-fold CV comparing, for both
+Random Forest and Logistic Regression: (a) SMOTE + class_weight
+(current), (b) SMOTE only, (c) class_weight only, no SMOTE. Full numbers
+in `data/processed/smote_vs_classweight_comparison.csv`; headline finding:
+
+- **Logistic Regression:** (a) and (b) are numerically IDENTICAL
+  (ROC-AUC 0.864975 both ways) — once SMOTE has balanced the classes to
+  ~1:1, `class_weight="balanced"` computes near-uniform weights on the
+  already-balanced resampled data, so it has no additional effect. Not a
+  bug — a correct, if slightly redundant, interaction between the two
+  techniques.
+- **Random Forest:** the three variants differ only marginally (ROC-AUC
+  0.8473 / 0.8469 / 0.8426 for both+SMOTE-only+classweight-only
+  respectively; recall is IDENTICAL — 0.886776 — across all three at the
+  0.5 threshold used for this comparison), because `balanced_subsample`
+  still varies its per-tree bootstrap weighting even on SMOTE-resampled
+  data, unlike LR's single global fit.
+
+**Decision: keep the current combined SMOTE + class_weight approach.**
+No variant meaningfully outperforms it, switching would add a decision
+point without measurable benefit, and it matches the pattern already
+validated across every other retrain in this rebuild. Documented here so
+the combination is a checked, evidence-backed choice rather than an
+untested default carried over without scrutiny.
+
+### 11. Champion model: measured evidence overrides the D4 default (PB-14)
+
+D4's default was "champion = regularised Logistic Regression ... unless
+my own nested-CV disagrees, RF as challenger." `run_champion_comparison()`
+in `model_selection_experiments.py` runs a paired (identical 5 folds
+across every candidate), refit-per-fold CV for Random Forest, Logistic
+Regression, and XGBoost, plus a paired t-test on recall and F1 — this
+project's own top two priority metrics (Recall > F1 > PR-AUC > ROC-AUC >
+Accuracy, see `README.md`'s "Success metrics, in priority order"). Full numbers in
+`data/processed/champion_comparison_paired_cv.csv`; decision record in
+`data/processed/champion_decision.json`.
+
+**Result: it disagrees.** Random Forest wins both top-priority metrics:
+recall 0.8868 vs. Logistic Regression's 0.8301 (paired t-test t=4.80,
+**p=0.0086**), F1 0.7517 vs. 0.7223 (t=3.96, **p=0.0166**) — both below
+the conventional 0.05 threshold, meaning Random Forest's advantage is
+consistent in direction and magnitude across every one of the 5 folds,
+not a fluke of one split (though a 5-fold paired t-test has only 4
+degrees of freedom, so this is real, reproducible evidence for THIS
+dataset, not a claim of certainty beyond it). Logistic Regression wins on
+ROC-AUC (0.865 vs. 0.847) and PR-AUC (0.658 vs. 0.566) — both ranked
+BELOW recall/F1 in this project's own stated hierarchy.
+
+**Decision: Random Forest remains champion** (unchanged from every prior
+retrain in this rebuild — `metrics.json`'s `primary_model` was already
+`"random_forest"`, so no train.py/inference.py change was needed), with
+Logistic Regression reported as the runner-up/challenger. This is exactly
+the scenario D4 anticipated: the default (LR) is overridden because this
+project's own measured, paired nested-CV evidence — read through this
+project's own stated metric priorities, not a generic "highest ROC-AUC
+wins" rule — disagrees with it.
