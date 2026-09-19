@@ -614,3 +614,88 @@ Tests: 51/51 backend (45 existing + 6 new), 3/3 dashboard. Retrained
 (`python -m app.ml.train`) to regenerate `psi_reference_features.csv`;
 holdout ROC-AUC unchanged at 0.849439 as expected (PB-10 touches no
 features or model code).
+
+### 16. Local SHAP explanations — wrong explainer for the model type, too few reasons, not plain-language (PB-05)
+
+Deferred out of PB-04's scope at the time (`explainer.py`'s `top_reasons()`
+hardcoded `k=3` in every caller). Two problems, addressed together.
+
+**Problem 1 — `ClaimExplainer` assumed every model is a tree ensemble.**
+`explainer.py` unconditionally built `shap.TreeExplainer(model)` regardless
+of what `model` actually was. This project trains and saves three models
+(`models/random_forest_final.pkl`, `logistic_regression_final.pkl`,
+`xgboost_final.pkl`) and, per §11, D4 explicitly allows a future retrain's
+own nested-CV evidence to swap the shipped champion away from Random
+Forest. `ClaimExplainer` was only ever instantiated with the RF estimator
+in practice (`inference.py`, `train.py`), so this was a real, unexercised
+bug rather than one that had been verified safe. Reproduced directly
+against the actually-shipped Logistic Regression challenger artifact:
+
+```
+>>> shap.TreeExplainer(logistic_regression_estimator)
+shap.utils._exceptions.InvalidModelError: Model type not yet supported by
+TreeExplainer: <class 'sklearn.linear_model._logistic.LogisticRegression'>
+```
+
+**Fix.** `ClaimExplainer.__init__` now picks the SHAP explainer class from
+the model's own type: `shap.TreeExplainer` for tree ensembles (Random
+Forest, XGBoost — exact, no background data needed, unchanged behavior for
+the currently-shipped RF champion), `shap.LinearExplainer` for Logistic
+Regression (needs a `background_data` sample of scaled features — raises a
+clear `ValueError` up front if none is given, rather than failing deep
+inside SHAP), and a generic, sampling-based `shap.Explainer` on
+`predict_proba` as a last-resort fallback for anything else. Verified the
+fix actually resolves the reproduced crash: built a `ClaimExplainer` on
+the real shipped LR estimator with a 30-row background sample of
+`risk_scores_test.csv` — no crash, finite SHAP values for every row.
+
+**Problem 2 — `top_reasons()` gave too few, too-technical reasons.**
+`k=3` (hardcoded at every call site) frequently left out features the
+audit tab specifically calls out (`is_highrisk_hobby`, `is_exec_occupation`)
+purely because 2-3 slightly-larger-magnitude features crowded them out of
+a 3-item list. Each reason was also just a feature name and a raw signed
+SHAP float (`"is_highrisk_hobby raised the fraud risk score (+0.175)."`)
+— technically correct but not the kind of plain sentence a non-technical
+investigator can act on without already knowing what a SHAP value is.
+
+**Fix.** `explainer.DEFAULT_TOP_K = 8` is the new default (`inference.py`'s
+`score_one()` no longer hardcodes `k=3`). Each reason dict now carries
+`rank`, `display_name` (humanized feature name), `direction`
+(`"increased"`/`"decreased"`, in place of `"raised"`/`"lowered"`), and
+`impact` (`"strongly"`/`"moderately"`/`"slightly"`, computed relative to
+the single largest-magnitude SHAP driver for THAT claim — raw SHAP
+magnitude has no fixed, human-meaningful scale on its own, so an absolute
+threshold would be meaningless across different claims) — alongside the
+existing `feature`/`value`/`shap_value`/`sentence` keys, all wired through
+`api/schemas.py`'s `ReasonCode`. Whether a value displays as `yes`/`no` is
+decided from the *column's dtype* (bool, from one-hot encoding) or a known
+flag-feature name, never guessed from the value itself — a genuine numeric
+feature that happens to equal 0 or 1 (`witnesses=1`) must never be
+mislabeled "yes"/"no" just because it looks boolean-ish. Example, live
+output for a real claim (`insured_hobbies="chess"`, `witnesses=0`):
+
+```
+1. is highrisk hobby (yes) strongly increased the fraud risk score.
+2. is major damage (yes) moderately increased the fraud risk score.
+3. incident severity ordinal (2) slightly increased the fraud risk score.
+4. witnesses (0) slightly decreased the fraud risk score.
+```
+
+`backend/tests/test_explainer.py` (new) locks in both fixes: SHAP's
+`TreeExplainer` genuinely cannot explain a `LogisticRegression` directly
+(reproduction lock-in); `ClaimExplainer` routes RF to `TreeExplainer` and
+LR (given `background_data`) to `LinearExplainer` without crashing, and
+raises `ValueError` for LR with no `background_data`; `top_reasons()`
+defaults to `k=8`, ranks are `1..k` in strict SHAP-magnitude order,
+`direction`/`impact` are always one of the expected words,
+`display_name` is used inside `sentence`; raw (unscaled) values are used
+for display when given; `_format_value`/`_impact_label` unit-tested
+directly, including the "numeric 0/1 is never relabeled yes/no" guard.
+`backend/tests/test_api.py::test_score_and_retrieve_claim` updated for the
+new `k=8` default and the new `ReasonCode` fields.
+
+Tests: 60/60 backend (51 existing + 9 new), 3/3 dashboard. Retrained
+(`python -m app.ml.train`) — `ClaimExplainer`'s constructor signature is
+backward-compatible for the RF path (no `background_data` needed), so this
+is a no-op verification, not a required retrain; holdout ROC-AUC unchanged
+at 0.849439.

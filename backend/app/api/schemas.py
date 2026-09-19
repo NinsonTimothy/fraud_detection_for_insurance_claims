@@ -126,9 +126,16 @@ class ClaimIn(BaseModel):
 
 
 class ReasonCode(BaseModel):
+    # PB-05: rank/display_name/direction/impact are new — a genuinely
+    # plain-language reason, not just a feature name + a raw signed SHAP
+    # float (see explainer.py's ClaimExplainer.top_reasons() docstring).
+    rank: int
     feature: str
+    display_name: str
     value: Any
     shap_value: float
+    direction: str
+    impact: str
     sentence: str
 
 

@@ -36,6 +36,12 @@ class FraudScoringService:
         self.model_version = f"random_forest-{metrics['n_features']}f-{metrics['n_train']}train"
 
         rf_only = self.rf_pipeline.named_steps["rf"]
+        # PB-05: ClaimExplainer now picks the correct SHAP explainer from
+        # the model's own type (TreeExplainer here, since RF is a tree
+        # ensemble — no background_data needed). If a future retrain's
+        # nested-CV evidence ever swaps the shipped champion to Logistic
+        # Regression (D4 allows this), ClaimExplainer would need a
+        # background_data sample passed here too — see explainer.py.
         self.explainer = ClaimExplainer(rf_only, self.feature_columns)
 
     @classmethod
@@ -69,7 +75,10 @@ class FraudScoringService:
         claim_df = pd.DataFrame([claim])
         X_scaled, X_raw = self._prepare(claim_df, return_raw=True)
         proba = float(self.rf_pipeline.predict_proba(X_scaled)[:, 1][0])
-        reasons = self.explainer.top_reasons(X_scaled, k=3, X_row_raw=X_raw)
+        # PB-05: k defaults to explainer.DEFAULT_TOP_K (8) — was hardcoded
+        # to 3 here, too few for a genuinely useful "why" (see explainer.py
+        # module docstring / DEFAULT_TOP_K comment).
+        reasons = self.explainer.top_reasons(X_scaled, X_row_raw=X_raw)
         grade = grade_for(proba)
         # PB-06: report which raw fields this claim did NOT supply (and
         # therefore fell back to feature_engineering.MISSING_COLUMN_DEFAULTS

@@ -43,7 +43,14 @@ def test_score_and_retrieve_claim(client):
     body = r.json()
     assert 0.0 <= body["fraud_probability"] <= 1.0
     assert body["risk_grade"] in {"Low", "Medium", "High"}
-    assert len(body["top_reasons"]) == 3
+    # PB-05: top_reasons defaults to k=8 (was 3) — see explainer.py's
+    # DEFAULT_TOP_K.
+    assert len(body["top_reasons"]) == 8
+    first = body["top_reasons"][0]
+    assert first["rank"] == 1
+    assert first["direction"] in {"increased", "decreased"}
+    assert first["impact"] in {"strongly", "moderately", "slightly"}
+    assert first["display_name"]
 
     claim_id = body["claim_id"]
     r = client.get(f"/claims/{claim_id}")
