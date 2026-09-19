@@ -1169,3 +1169,80 @@ reads.
 Tests: 98/98 backend (89 existing + 9 new), 7/7 dashboard (unaffected —
 no Python code touched). No retrain needed — pure deployment-config
 change.
+
+### 23. Batch scoring: N+1 inserts, missing top_reasons, unbounded upload (PB-18)
+
+Reproduced against the pre-fix `/score/batch`, three separate problems:
+
+- **N+1 inserts.** The endpoint's persistence loop did `db.add(claim);
+  db.flush()` *inside* a Python `for idx, row in df.iterrows()` — one
+  flush (a synchronous DB round-trip to assign the autoincrement id)
+  per claim, so scoring N claims did N round-trips instead of one.
+  Counted directly rather than inferred: monkeypatching `Session.flush`
+  to count real calls (`tests/test_persistence.py`) shows the shared
+  `persist_scored_claims_batch()` helper does exactly **1** flush for a
+  50-row batch, independent of N — the old inline loop would have shown
+  50. Negligible against local SQLite (same process, no network), but a
+  real, linearly-growing cost against a network-attached Postgres — this
+  repo's own `docker-compose.yml` reference deployment (PB-13).
+- **No `top_reasons` for batch-scored claims.** `score_batch()` never
+  called into SHAP at all — a claim scored via `/score` always got a
+  `top_reasons` explanation, the identical claim scored via
+  `/score/batch` got none, silently. Not a performance compromise that
+  was ever actually necessary: `ClaimExplainer.shap_values_for()` is
+  already vectorized across rows for every explainer kind this project
+  uses (tree/linear/generic), so explaining N rows costs one SHAP call
+  either way — what made per-row explanation *look* expensive was
+  calling `top_reasons()` (built for exactly one row) N separate times,
+  each paying its own SHAP call-overhead. New
+  `explainer.py::top_reasons_batch()` does ONE SHAP call over the whole
+  matrix, then loops in plain Python (cheap) to build each row's reason
+  list — refactored the existing per-row logic into a shared
+  `_reasons_for_row()` helper so `top_reasons()` and
+  `top_reasons_batch()` can't drift apart; a test asserts they produce
+  byte-identical output. `score_batch()` now returns a `top_reasons`
+  column, persisted through the same `persist_scored_claims_batch()`
+  path (no more `top_reasons=None` placeholder in either the API's or
+  the dashboard's batch-persistence call).
+- **No upload size limit.** The endpoint read the whole uploaded file
+  into memory (`await file.read()`) and parsed it with no check on byte
+  size or resulting row count at any point — a large-enough file could
+  drive unbounded memory/parse/score/SHAP/DB-write/response-payload
+  cost from a single request. New `config.MAX_BATCH_UPLOAD_BYTES`
+  (10 MB default) rejects an oversized upload with 413 *before* pandas
+  parses it; `config.MAX_BATCH_ROWS` (5,000 default) catches the case
+  where a small file still unpacks into too many rows. Both
+  overridable via env var, same pattern as `FP_REVIEW_COST`/
+  `AEGIS_API_KEY`.
+
+**Fix — the endpoint itself.** `/score/batch` now calls the shared
+`persist_scored_claims_batch()` (`db/persistence.py`, already used by
+the dashboard's Batch review page since PB-12) instead of its own
+hand-rolled per-row loop — the same "one write path, not two drifting
+copies" reasoning that already governs `/score` (PB-12) now covers both
+scoring endpoints. `db/models.py`'s now-unused `ScoredClaim`/
+`AuditLogEntry` imports were dropped from `scoring.py` (only `Claim`
+is still needed there, for the `/score` duplicate-`external_ref` check).
+
+**Fix — the dashboard side-effect.** `batch_review.py`'s persistence
+call no longer hardcodes `"top_reasons": None` (it's real now, straight
+from `scored.to_dict(orient="records")`) — but the review *table* still
+drops that column before display: a list-of-dicts per cell is useful
+data to persist and query later, not something a triage grid should
+render inline. Per-claim explanations are still available the same way
+they already were (Score a claim's SHAP display, or `GET /claims/{id}`).
+
+`backend/tests/test_explainer.py` (+3): `top_reasons_batch()` produces
+byte-identical output to calling `top_reasons()` once per row; respects
+a custom `k`; uses raw unscaled values when given, same as the
+single-row path. `backend/tests/test_persistence.py` (+1): the
+flush-count regression above. `backend/tests/test_client_error_handling.py`
+(+3): every row from a real `/score/batch` call carries a non-empty
+`top_reasons` list and each claim is independently retrievable via
+`GET /claims/{id}`; an oversized upload is 413, not silently
+read/parsed/truncated; too many rows is 413, not silently scored.
+
+Tests: 105/105 backend (98 existing + 7 new), 7/7 dashboard (unaffected
+— `batch_review.py`'s change is a data pass-through, no new page logic
+that AppTest wasn't already exercising). No retrain needed — no model
+or feature-engineering code touched.

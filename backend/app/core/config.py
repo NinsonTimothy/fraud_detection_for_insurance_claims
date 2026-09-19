@@ -22,9 +22,21 @@ ANALYST_REVIEW_COST = float(os.environ.get("FP_REVIEW_COST", "250.0"))
 # generated secret — this makes "nobody set AEGIS_API_KEY" a visible,
 # grep-able fact about a deployment rather than a silently-working
 # default that looks secure but isn't. Any real deployment MUST set
-# AEGIS_API_KEY; docker-compose.yml's api service does not currently set
-# one either (see docs/LIMITATIONS.md), which is itself disclosed there.
+# AEGIS_API_KEY — docker-compose.yml's api service reads it from the
+# shell/.env.example with this exact same fallback (PB-13), so an
+# unconfigured Docker deployment is visibly insecure the same way an
+# unconfigured bare `uvicorn` one is, not silently fine.
 API_KEY = os.environ.get("AEGIS_API_KEY", "CHANGE-ME-insecure-default-api-key")
+
+# PB-18: /score/batch used to accept an unbounded CSV upload — no cap on
+# the raw upload size or on how many rows it unpacked to. Rejecting a
+# too-large upload before pandas parses it (MAX_BATCH_UPLOAD_BYTES) and
+# capping row count (MAX_BATCH_ROWS) bounds parsing time, scoring/SHAP
+# time, DB writes, and response payload size to something finite.
+# Defaults are generous for this thesis-scale dataset's shape (the raw
+# dataset itself is ~1,000 rows) but not unlimited, and overridable.
+MAX_BATCH_UPLOAD_BYTES = int(os.environ.get("MAX_BATCH_UPLOAD_BYTES", str(10 * 1024 * 1024)))  # 10 MB
+MAX_BATCH_ROWS = int(os.environ.get("MAX_BATCH_ROWS", "5000"))
 
 # SH-02 / D3: `is_highrisk_hobby` and `is_exec_occupation` (feature_engineering.py's
 # RISKY_FEATURE_COLUMNS) encode a lifestyle/occupation -> risk association

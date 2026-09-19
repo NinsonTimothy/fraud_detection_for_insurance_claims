@@ -119,6 +119,25 @@ class ClaimExplainer:
         doesn't have to infer order from list position."""
         sv = self.shap_values_for(X_row_scaled)[0]
         display_row = X_row_raw if X_row_raw is not None else X_row_scaled
+        return self._reasons_for_row(sv, display_row.iloc[0], display_row.dtypes, k)
+
+    def top_reasons_batch(self, X_scaled: pd.DataFrame, k: int = DEFAULT_TOP_K, X_raw: pd.DataFrame | None = None) -> list[list[dict]]:
+        """Batch counterpart to `top_reasons()` (PB-18) — ONE SHAP call over
+        the whole matrix instead of N single-row calls. `shap_values_for()`
+        is already vectorized across rows for every explainer kind this
+        class builds (TreeExplainer/LinearExplainer/generic `Explainer`),
+        so the SHAP computation itself costs the same total work either
+        way; what this avoids is N-1 *extra* Python/SHAP call-overhead
+        round-trips, which is what made per-row explanation look too
+        expensive to bother with for batch scoring before this ticket
+        (`score_batch()` shipped with no `top_reasons` at all). Returns one
+        reasons list per row, same order as `X_scaled`."""
+        sv_matrix = self.shap_values_for(X_scaled)
+        display = X_raw if X_raw is not None else X_scaled
+        dtypes = display.dtypes  # same for every row — compute once, not once per row
+        return [self._reasons_for_row(sv_matrix[i], display.iloc[i], dtypes, k) for i in range(len(display))]
+
+    def _reasons_for_row(self, sv: np.ndarray, raw_values: pd.Series, dtypes: pd.Series, k: int) -> list[dict]:
         order = np.argsort(-np.abs(sv))[:k]
         max_abs = float(np.abs(sv).max()) if len(sv) else 0.0
         reasons = []
@@ -133,8 +152,8 @@ class ClaimExplainer:
             # align_to_training_columns() padded in a category this row
             # doesn't belong to (see feature_engineering.py) — both read
             # correctly as a flag under is_bool_dtype-or-name check below.
-            col_is_flag = pd.api.types.is_bool_dtype(display_row.dtypes.iloc[idx]) or feat in ("is_highrisk_hobby", "is_exec_occupation", "is_new_customer", "is_no_witness", "is_major_damage")
-            raw_val = display_row.iloc[0, idx]
+            col_is_flag = pd.api.types.is_bool_dtype(dtypes.iloc[idx]) or feat in ("is_highrisk_hobby", "is_exec_occupation", "is_new_customer", "is_no_witness", "is_major_damage")
+            raw_val = raw_values.iloc[idx]
             if hasattr(raw_val, "item"):  # numpy scalar -> plain python
                 raw_val = raw_val.item()
             direction = "increased" if sv[idx] > 0 else "decreased"

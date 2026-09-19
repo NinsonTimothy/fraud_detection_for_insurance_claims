@@ -57,7 +57,7 @@ class FraudScoringService:
         return (X_scaled, X) if return_raw else X_scaled
 
     def score_batch(self, claims: pd.DataFrame) -> pd.DataFrame:
-        X_scaled = self._prepare(claims)
+        X_scaled, X_raw = self._prepare(claims, return_raw=True)
         proba = self.rf_pipeline.predict_proba(X_scaled)[:, 1]
         # PB-04: grade_for_array() and score_one()'s grade_for() are the
         # SAME function's vectorized/scalar forms (risk_policy.py) — they
@@ -65,10 +65,20 @@ class FraudScoringService:
         # pd.cut()-vs-hand-written-if/elif pair did.
         grade = grade_for_array(proba)
         flagged = is_flagged(proba, self.operating_threshold)
+        # PB-18: batch scoring used to skip SHAP entirely (no top_reasons
+        # column at all), so every claim persisted through /score/batch or
+        # the dashboard's Batch review page had no "why" — unlike a
+        # single-claim score, which always got one. top_reasons_batch()
+        # (explainer.py) computes SHAP for the whole batch in ONE call
+        # (already vectorized across rows), not N single-row calls, so
+        # this is the batch equivalent of score_one()'s explanation, not a
+        # slower re-implementation of it.
+        reasons = self.explainer.top_reasons_batch(X_scaled, X_raw=X_raw)
         return pd.DataFrame({
             "fraud_probability": proba, "risk_grade": grade,
             "flagged": flagged, "operating_threshold": self.operating_threshold,
             "recommended_action": [recommended_action(g) for g in grade],
+            "top_reasons": reasons,
         }, index=claims.index)
 
     def score_one(self, claim: dict) -> dict:

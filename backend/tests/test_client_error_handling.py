@@ -87,3 +87,50 @@ def test_valid_batch_csv_still_scores_successfully(client):
     r = client.post("/score/batch", files={"file": ("good.csv", good_csv, "text/csv")})
     assert r.status_code == 200
     assert len(r.json()) == 2
+
+
+def test_batch_scoring_includes_top_reasons_per_row(client):
+    """PB-18: /score/batch used to return no top_reasons at all — a claim
+    scored in a batch had strictly less information than the identical
+    claim scored via /score. Every row must now carry a real, non-empty
+    reasons list, and each claim_id must be independently retrievable
+    with its explanation intact via GET /claims/{id}."""
+    good_csv = io.BytesIO(b"age,total_claim_amount\n35,50000\n40,60000\n")
+    r = client.post("/score/batch", files={"file": ("good.csv", good_csv, "text/csv")})
+    assert r.status_code == 200
+    rows = r.json()
+    assert len(rows) == 2
+    for row in rows:
+        assert row["top_reasons"], "expected a non-empty top_reasons list for every batch-scored row"
+        assert {"rank", "feature", "sentence"} <= set(row["top_reasons"][0].keys())
+
+    claim_detail = client.get(f"/claims/{rows[0]['claim_id']}")
+    assert claim_detail.status_code == 200
+
+
+def test_oversized_batch_upload_is_413_not_silently_truncated(client, monkeypatch):
+    monkeypatch.setenv("MAX_BATCH_UPLOAD_BYTES", "10")
+    for mod in list(sys.modules):
+        if mod.startswith("app."):
+            del sys.modules[mod]
+    from app.main import app as fresh_app
+    from fastapi.testclient import TestClient as FreshTestClient
+    with FreshTestClient(fresh_app, headers={"X-API-Key": TEST_API_KEY}) as fresh_client:
+        good_csv = io.BytesIO(b"age,total_claim_amount\n35,50000\n40,60000\n")  # well over 10 bytes
+        r = fresh_client.post("/score/batch", files={"file": ("good.csv", good_csv, "text/csv")})
+        assert r.status_code == 413
+
+
+def test_too_many_batch_rows_is_413_not_silently_scored(client, monkeypatch):
+    monkeypatch.setenv("MAX_BATCH_ROWS", "2")
+    for mod in list(sys.modules):
+        if mod.startswith("app."):
+            del sys.modules[mod]
+    from app.main import app as fresh_app
+    from fastapi.testclient import TestClient as FreshTestClient
+    with FreshTestClient(fresh_app, headers={"X-API-Key": TEST_API_KEY}) as fresh_client:
+        rows = "\n".join(f"{20 + i},{1000 * i}" for i in range(5))
+        csv_bytes = io.BytesIO(f"age,total_claim_amount\n{rows}\n".encode())
+        r = fresh_client.post("/score/batch", files={"file": ("many.csv", csv_bytes, "text/csv")})
+        assert r.status_code == 413
+        assert "limit 2" in r.text

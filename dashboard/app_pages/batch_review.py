@@ -40,16 +40,16 @@ if uploaded is not None:
     df = pd.read_csv(uploaded, keep_default_na=False, na_values=[""])
     service = get_scoring_service()
     scored = service.score_batch(df)
-    result = pd.concat([df.reset_index(drop=True), scored.reset_index(drop=True)], axis=1)
 
-    # PB-12: persist the whole batch, same as api/scoring.py's POST
-    # /score/batch does — score_batch() never computes top_reasons (no
-    # SHAP call for batch scoring) and doesn't return model_version, so
-    # both are filled in here the same way scoring.py already does.
+    # PB-12/PB-18: persist the whole batch, same as api/scoring.py's POST
+    # /score/batch does. score_batch() now returns a real top_reasons list
+    # per row (PB-18 — one batched SHAP call, not computed here); it still
+    # doesn't return model_version (a scalar, same for every row), so
+    # that's filled in from the service the same way scoring.py does.
     from app.db.persistence import persist_scored_claims_batch
     raw_rows = df.to_dict(orient="records")
     scored_rows = [
-        {**row, "model_version": service.model_version, "top_reasons": None}
+        {**row, "model_version": service.model_version}
         for row in scored.to_dict(orient="records")
     ]
     db = new_db_session()
@@ -58,6 +58,12 @@ if uploaded is not None:
         db.commit()
     finally:
         db.close()
+
+    # PB-18: top_reasons is real now (a list-of-dicts per row) but that's
+    # noise in a review TABLE, not a triage aid — it's already surfaced
+    # per-claim the same way score_claim.py shows it, just not built
+    # here; the review grid stays the flat scalar columns it always was.
+    result = pd.concat([df.reset_index(drop=True), scored.drop(columns=["top_reasons"]).reset_index(drop=True)], axis=1)
     result.insert(0, "claim_id", claim_ids)
 
     st.session_state["batch_result"] = result

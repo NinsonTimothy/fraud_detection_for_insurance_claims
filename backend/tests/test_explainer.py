@@ -130,6 +130,42 @@ def test_top_reasons_uses_raw_unscaled_values_when_given(artifacts):
     assert "41" in age_reason["sentence"]
 
 
+def test_top_reasons_batch_matches_per_row_top_reasons(artifacts):
+    """PB-18: top_reasons_batch() must produce EXACTLY what calling
+    top_reasons() once per row would — it's an efficiency refactor (one
+    SHAP call over the matrix instead of N), not a different computation.
+    This is the test that would catch the refactor silently changing
+    output (e.g. a row/column indexing slip in _reasons_for_row)."""
+    explainer = ClaimExplainer(artifacts["rf"], artifacts["feature_columns"])
+    rows_scaled = artifacts["X_test_scaled"].iloc[:5]
+
+    batch_reasons = explainer.top_reasons_batch(rows_scaled)
+    assert len(batch_reasons) == 5
+
+    for i in range(5):
+        single_reasons = explainer.top_reasons(rows_scaled.iloc[[i]])
+        assert batch_reasons[i] == single_reasons
+
+
+def test_top_reasons_batch_respects_k(artifacts):
+    explainer = ClaimExplainer(artifacts["rf"], artifacts["feature_columns"])
+    rows_scaled = artifacts["X_test_scaled"].iloc[:3]
+    batch_reasons = explainer.top_reasons_batch(rows_scaled, k=4)
+    assert all(len(reasons) == 4 for reasons in batch_reasons)
+
+
+def test_top_reasons_batch_uses_raw_unscaled_values_when_given(artifacts):
+    explainer = ClaimExplainer(artifacts["rf"], artifacts["feature_columns"])
+    rows_scaled = artifacts["X_test_scaled"].iloc[:3]
+    rows_raw = rows_scaled.copy()
+    rows_raw["age"] = [22, 41, 63]
+
+    batch_reasons = explainer.top_reasons_batch(rows_scaled, k=len(artifacts["feature_columns"]), X_raw=rows_raw)
+    for i, expected_age in enumerate([22, 41, 63]):
+        age_reason = next(r for r in batch_reasons[i] if r["feature"] == "age")
+        assert age_reason["value"] == pytest.approx(float(expected_age))
+
+
 def test_impact_label_relative_to_row_max():
     assert _impact_label(9.0, 10.0) == "strongly"
     assert _impact_label(5.0, 10.0) == "moderately"

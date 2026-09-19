@@ -107,6 +107,38 @@ class TestPersistScoredClaimsBatch:
         assert claim_ids == []
         assert db.query(Claim).count() == 0
 
+    def test_flushes_once_regardless_of_batch_size(self, db, monkeypatch):
+        """PB-18: reproduces the N+1-inserts bug's absence here directly,
+        rather than by inference — api/scoring.py's old /score/batch did
+        one db.flush() per row inside a Python for-loop (N round-trips for
+        N claims); persist_scored_claims_batch() must do exactly ONE,
+        independent of N. Counting real Session.flush() calls rather than
+        timing keeps this deterministic (no wall-clock flakiness) and
+        actually verifies the round-trip count, not just an assumption
+        about what one flush() vs N implies."""
+        flush_calls = []
+        original_flush = db.flush
+
+        def counting_flush(*args, **kwargs):
+            flush_calls.append(1)
+            return original_flush(*args, **kwargs)
+
+        monkeypatch.setattr(db, "flush", counting_flush)
+
+        n = 50
+        raw_rows = [{"age": i} for i in range(n)]
+        scored_rows = [{**SAMPLE_RESULT, "fraud_probability": i / n} for i in range(n)]
+        # Not committing here on purpose — commit() does its own internal
+        # flush, which would add one more call unrelated to what this test
+        # is checking (that persist_scored_claims_batch() itself doesn't
+        # flush per row).
+        claim_ids = persist_scored_claims_batch(db, raw_rows, scored_rows, ingested_via="dashboard_batch")
+
+        assert len(claim_ids) == n
+        assert all(cid is not None for cid in claim_ids)  # flush() did assign real autoincrement ids
+        assert len(flush_calls) == 1, f"expected exactly 1 flush() for a {n}-row batch, got {len(flush_calls)}"
+        db.rollback()  # never persisted a commit, so nothing to clean up beyond this
+
 
 class TestPersistEscalation:
     def test_creates_claim_escalated_audit_entry(self, db):

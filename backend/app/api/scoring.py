@@ -17,6 +17,27 @@ pd.to_numeric(..., errors="coerce").fillna(0.0) silently turned it into
 the single-claim bug PB-06 fixed. Guarded against here too, as a 422
 listing exactly which columns/rows failed to parse, rather than either
 crashing or silently corrupting the data.
+
+PB-18 (fixed): /score/batch had three separate problems, reproduced
+directly before this fix:
+  - N+1 inserts: one `db.flush()` per row inside a Python for-loop, so
+    scoring a batch of N claims did N synchronous DB round-trips just to
+    assign ids, instead of one. Reproduced by counting actual
+    `Session.flush()` calls (tests/test_persistence.py) — N for the old
+    per-row loop, 1 for `persist_scored_claims_batch()` regardless of N;
+    a linearly-growing cost that matters most against a network-attached
+    Postgres (the docker-compose reference deployment), negligible only
+    against local SQLite.
+  - No `top_reasons` was ever computed or stored for a batch-scored
+    claim — score_one()'s SHAP explanation never had a batch
+    counterpart, so a claim scored via /score/batch had strictly less
+    information than the identical claim scored via /score. Fixed in
+    inference.py's score_batch() (explainer.py's new
+    top_reasons_batch() — ONE SHAP call over the whole matrix, not N).
+  - The uploaded file had no size limit at all — an arbitrarily large
+    CSV would be read fully into memory, parsed, scored, and persisted
+    in one request. config.MAX_BATCH_UPLOAD_BYTES/MAX_BATCH_ROWS cap
+    both the raw upload size and the row count.
 """
 from __future__ import annotations
 
@@ -27,8 +48,9 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.api.schemas import ClaimIn, ScoreOut
-from app.db.models import AuditLogEntry, Claim, ScoredClaim
-from app.db.persistence import persist_scored_claim
+from app.core import config
+from app.db.models import Claim
+from app.db.persistence import persist_scored_claim, persist_scored_claims_batch
 from app.db.session import get_db
 from app.ml.feature_engineering import NUMERIC_PASSTHROUGH_COLUMNS
 from app.ml.inference import FraudScoringService
@@ -94,6 +116,14 @@ async def score_batch(file: UploadFile, db: Session = Depends(get_db)):
     if not file.filename.endswith(".csv"):
         raise HTTPException(400, "upload a .csv file")
     raw = await file.read()
+
+    # PB-18: reject an oversized upload before pandas even parses it —
+    # previously unbounded, so an arbitrarily large file was read fully
+    # into memory with no check at all until (if ever) something else
+    # downstream happened to fail.
+    if len(raw) > config.MAX_BATCH_UPLOAD_BYTES:
+        raise HTTPException(413, f"upload too large: {len(raw)} bytes (limit {config.MAX_BATCH_UPLOAD_BYTES})")
+
     # SH-01: keep_default_na=False so an uploaded claim whose
     # authorities_contacted is genuinely "None" (no authority contacted)
     # isn't misread as missing data — see clean_data.py's module docstring.
@@ -107,24 +137,28 @@ async def score_batch(file: UploadFile, db: Session = Depends(get_db)):
     if len(df) == 0:
         raise HTTPException(400, "the uploaded CSV has a header but no data rows")
 
+    # PB-18: a small file can still unpack into far more rows than this
+    # endpoint should score/persist/explain in one request.
+    if len(df) > config.MAX_BATCH_ROWS:
+        raise HTTPException(413, f"too many rows: {len(df)} (limit {config.MAX_BATCH_ROWS})")
+
     _validate_numeric_columns(df)
 
     service = FraudScoringService.instance()
     scored = service.score_batch(df)
 
-    claim_ids = []
-    for idx, row in df.iterrows():
-        claim = Claim(raw_payload=row.to_dict(), ingested_via="batch_csv")
-        db.add(claim)
-        db.flush()
-        s = scored.loc[idx]
-        db.add(ScoredClaim(
-            claim_id=claim.id, fraud_probability=float(s["fraud_probability"]), risk_grade=s["risk_grade"],
-            flagged=bool(s["flagged"]), operating_threshold=float(s["operating_threshold"]),
-            model_version=service.model_version,
-        ))
-        claim_ids.append(claim.id)
-    db.add(AuditLogEntry(event_type="batch_scored", detail={"n_rows": len(df)}))
+    # PB-18: persist via the shared batch-write helper (db/persistence.py,
+    # already used by the dashboard's Batch review page since PB-12) —
+    # ONE flush for every Claim row and ONE add_all for every ScoredClaim,
+    # instead of a flush per row (previously N synchronous DB round-trips
+    # for a batch of N — the cost that matters most against a
+    # network-attached Postgres, not local SQLite). score_batch() now
+    # also returns a real top_reasons list per row (PB-18), so this
+    # persists actual explanations instead of storing NULL for every
+    # batch-scored claim.
+    raw_rows = df.to_dict(orient="records")
+    scored_rows = [{**row, "model_version": service.model_version} for row in scored.to_dict(orient="records")]
+    claim_ids = persist_scored_claims_batch(db, raw_rows, scored_rows, ingested_via="batch_csv")
     db.commit()
 
     scored = scored.reset_index(drop=True)
