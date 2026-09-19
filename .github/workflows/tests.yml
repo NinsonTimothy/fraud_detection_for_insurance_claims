@@ -20,6 +20,14 @@ jobs:
         working-directory: backend
         run: pip install -r requirements.txt
 
-      - name: Run tests
+      - name: Run backend tests
         working-directory: backend
+        run: pytest tests/ -q
+
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: pip install -r requirements.txt
+
+      - name: Run dashboard tests
+        working-directory: dashboard
         run: pytest tests/ -q

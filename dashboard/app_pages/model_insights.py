@@ -9,7 +9,14 @@ from pathlib import Path
 import plotly.express as px
 import streamlit as st
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+_dashboard_root = str(Path(__file__).resolve().parents[1])
+if _dashboard_root not in sys.path:
+    # PB-01: append, never insert(0, ...) — inserting the dashboard
+    # dir at the FRONT of sys.path on every rerun is what let
+    # `import app...` resolve to the old dashboard/app.py instead of
+    # the backend's app/ package (see components/data_access.py,
+    # which puts backend/ at sys.path[0] once, on first import).
+    sys.path.append(_dashboard_root)
 from components.data_access import load_cross_validation, load_shap_importance, models_are_available
 from components.theme import ACCENT, DANGER, MUTED, inject_css, page_header
 

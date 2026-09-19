@@ -36,7 +36,7 @@ In a second terminal:
 ```bash
 cd dashboard
 pip install -r requirements.txt
-streamlit run app.py               # dashboard at http://localhost:8501
+streamlit run streamlit_app.py               # dashboard at http://localhost:8501
 ```
 
 The dashboard calls the same `FraudScoringService` the API uses, in-process
@@ -76,7 +76,7 @@ aegis-risk-engine/
 │   │                              regression test), API, Kafka logic
 │   └── requirements.txt
 ├── dashboard/
-│   ├── app.py                    # nav shell
+│   ├── streamlit_app.py           # nav shell
 │   ├── app_pages/                 # Overview, Score a claim, Batch review,
 │   │                                Model insights, Monitoring & external validation
 │   └── components/                 # theme.py, data_access.py
