@@ -80,6 +80,88 @@ def test_model_insights_renders_no_exception():
     assert not at.exception, [str(e) for e in at.exception]
 
 
+def test_score_claim_persists_a_queryable_claim():
+    """PB-12: a claim scored from the dashboard used to be shown and then
+    discarded — nothing reached the DB, so it never showed up in
+    `GET /claims`, the risk grid, or the audit log the way an API-scored
+    claim did. Now it must be there, tagged ingested_via="dashboard"."""
+    from app.db.models import AuditLogEntry, Claim, ScoredClaim
+    from app.db.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        before = db.query(Claim).filter(Claim.ingested_via == "dashboard").count()
+    finally:
+        db.close()
+
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "score_claim.py"))
+    at.run(timeout=30)
+    at.button[0].click().run(timeout=30)
+    assert not at.exception, [str(e) for e in at.exception]
+
+    db = SessionLocal()
+    try:
+        dashboard_claims = db.query(Claim).filter(Claim.ingested_via == "dashboard").order_by(Claim.id.desc()).all()
+        assert len(dashboard_claims) == before + 1
+        newest = dashboard_claims[0]
+        scored = db.query(ScoredClaim).filter(ScoredClaim.claim_id == newest.id).one_or_none()
+        assert scored is not None
+        audit = db.query(AuditLogEntry).filter(AuditLogEntry.claim_id == newest.id, AuditLogEntry.event_type == "claim_scored").one_or_none()
+        assert audit is not None
+    finally:
+        db.close()
+
+    saved_captions = [c.value for c in at.caption if "Saved as claim #" in c.value]
+    assert saved_captions, "expected a 'Saved as claim #N' caption confirming persistence"
+
+
+def test_batch_review_persists_claims_and_escalation():
+    """PB-12: the scored batch and any escalation used to live only in
+    st.session_state — gone on refresh, invisible to the API/audit log.
+    Now both must land in the DB, and escalating must produce a
+    claim_escalated audit-log entry against the claim's real id."""
+    from app.db.models import AuditLogEntry, Claim, ScoredClaim
+    from app.db.session import SessionLocal
+
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "batch_review.py"))
+    at.run(timeout=30)
+    assert not at.exception, [str(e) for e in at.exception]
+
+    raw = REPO_ROOT / "data" / "raw" / "insurance_claims_raw.csv"
+    sample = pd.read_csv(raw).head(3)
+    csv_bytes = sample.to_csv(index=False).encode()
+    at.file_uploader[0].set_value(("batch_test.csv", csv_bytes, "text/csv")).run(timeout=30)
+    assert not at.exception, [str(e) for e in at.exception]
+
+    db = SessionLocal()
+    try:
+        batch_claims = db.query(Claim).filter(Claim.ingested_via == "dashboard_batch").all()
+        assert len(batch_claims) >= 3
+        batch_ids = [c.id for c in batch_claims]
+        scored_count = db.query(ScoredClaim).filter(ScoredClaim.claim_id.in_(batch_ids)).count()
+        assert scored_count == len(batch_claims), "every persisted claim should have a matching ScoredClaim row"
+    finally:
+        db.close()
+
+    # Escalate the (pre-selected) first row.
+    at.text_input[0].set_value("j.analyst").run(timeout=30)
+    at.text_input[1].set_value("please take a look").run(timeout=30)
+    at.button[0].click().run(timeout=30)
+    assert not at.exception, [str(e) for e in at.exception]
+
+    db = SessionLocal()
+    try:
+        entry = db.query(AuditLogEntry).filter(AuditLogEntry.event_type == "claim_escalated").order_by(AuditLogEntry.id.desc()).first()
+        assert entry is not None
+        assert entry.actor == "j.analyst"
+        assert entry.detail == {"note": "please take a look"}
+        assert entry.claim_id is not None
+    finally:
+        db.close()
+
+    assert any("escalated for investigation" in s.value for s in at.success)
+
+
 def test_overview_shows_bootstrap_ci_caption():
     """SH-04: the Overview page's KPI cards must carry a bootstrap 95% CI
     caption, not just a bare point estimate, when holdout_bootstrap_ci.csv

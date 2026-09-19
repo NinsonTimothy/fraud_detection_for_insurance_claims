@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.api.schemas import ClaimIn, ScoreOut
 from app.db.models import AuditLogEntry, Claim, ScoredClaim
+from app.db.persistence import persist_scored_claim
 from app.db.session import get_db
 from app.ml.feature_engineering import NUMERIC_PASSTHROUGH_COLUMNS
 from app.ml.inference import FraudScoringService
@@ -78,16 +79,11 @@ def score_claim(claim_in: ClaimIn, db: Session = Depends(get_db)):
     service = FraudScoringService.instance()
     result = service.score_one(payload_dict)
 
-    claim = Claim(external_ref=claim_in.external_ref, raw_payload=payload_dict, ingested_via="api")
-    db.add(claim)
-    db.flush()
-    scored = ScoredClaim(
-        claim_id=claim.id, fraud_probability=result["fraud_probability"], risk_grade=result["risk_grade"],
-        flagged=result["flagged"], operating_threshold=result["operating_threshold"],
-        top_reasons=result["top_reasons"], model_version=result["model_version"],
-    )
-    db.add(scored)
-    db.add(AuditLogEntry(event_type="claim_scored", claim_id=claim.id, detail={"fraud_probability": result["fraud_probability"]}))
+    # PB-12: shared with the dashboard's "Score a claim" page
+    # (db/persistence.py) — both surfaces write a Claim/ScoredClaim/audit
+    # entry through the exact same function now, not two hand-maintained
+    # copies of this logic.
+    claim = persist_scored_claim(db, payload_dict, result, external_ref=claim_in.external_ref, ingested_via="api")
     db.commit()
 
     return ScoreOut(claim_id=claim.id, **result)

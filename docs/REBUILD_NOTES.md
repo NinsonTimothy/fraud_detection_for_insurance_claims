@@ -988,3 +988,110 @@ Tests: 80/80 backend (71 existing + 9 new), 5/5 dashboard (the dashboard
 calls `FraudScoringService` in-process, never over HTTP — confirmed by
 inspection, not just assumed — so it's entirely unaffected by this
 ticket). No retrain needed — no ML code touched.
+
+### 21. Dashboard scores and escalations never reached the DB (PB-12)
+
+Reproduced directly: score a claim from the dashboard's "Score a claim"
+page, then call the API's `GET /claims` — the claim isn't there. It never
+was: `score_claim.py` called `FraudScoringService.score_one()` and
+rendered the result, full stop; nothing was ever written anywhere. Same
+gap, worse, on "Batch review": the scored batch lived only in
+`st.session_state["batch_result"]`, gone on the next page refresh, and
+"Escalate a claim for investigation" only ever appended to
+`st.session_state["escalated_rows"]` — an escalation an analyst clicked
+had **no** representation outside that one browser tab's session, not
+even a way for a second analyst to see it. A claim scored through the
+API showed up in the claims list, the risk grid, and the audit log; the
+identical claim scored through the dashboard was invisible everywhere
+except the page that had just shown it.
+
+**Fix — shared write path, not two copies of it.** New
+`backend/app/db/persistence.py`: `persist_scored_claim()`,
+`persist_scored_claims_batch()`, `persist_escalation()` — the
+Claim/ScoredClaim/AuditLogEntry write logic that used to live only
+inline in `api/scoring.py`'s `/score` endpoint, now centralized so the
+dashboard calls the *exact same functions* instead of a second,
+inevitably-drifting copy of the same three-table write. This mirrors the
+reasoning that already governs scoring itself: `inference.py`'s shared
+`FraudScoringService` singleton means the API and dashboard can never
+disagree about a fraud *probability*; this module means they can't
+disagree about how a score gets *recorded* either.
+`api/scoring.py`'s `/score` endpoint was refactored to call
+`persist_scored_claim()` (behavior unchanged — same three rows, same
+commit point). `/score/batch`'s existing per-row-flush loop was left
+untouched deliberately — it has a real, separate efficiency problem
+(N+1 inserts) tracked as its own ticket, PB-18, and folding a rewrite of
+it into this one would have muddied which fix caused which behavior
+change.
+
+**Fix — dashboard gets its own DB session.** The dashboard had never
+touched the DB before this ticket, so nothing guaranteed its tables
+existed (unlike the API, whose `main.py` lifespan calls `init_db()` on
+startup — and `docker-compose.yml`'s `dashboard` service does not
+`depends_on` the `api` service, so it can start first). New
+`components/data_access.py::get_db_session_factory()`
+(`@st.cache_resource` — calls the idempotent `init_db()` once per
+process, then returns `SessionLocal`) and `new_db_session()` (a thin
+wrapper for "give me a session", `score_claim.py`/`batch_review.py`'s
+equivalent of the API's `Depends(get_db)`, just without FastAPI's
+request-scoped teardown — each call site commits and closes explicitly
+in a `try/finally`, mirroring `get_db()`'s own `finally: db.close()`).
+
+**Fix — three call sites.**
+- `score_claim.py`: after `score_one()`, calls `persist_scored_claim(...,
+  ingested_via="dashboard")` and now shows a
+  `"Saved as claim #N — visible via the API's /claims/{id}..."` caption,
+  so scoring one claim from the dashboard is visibly, not just actually,
+  the same durable action as scoring it through the API.
+- `batch_review.py`: after `score_batch()`, calls
+  `persist_scored_claims_batch(..., ingested_via="dashboard_batch")` —
+  `score_batch()` returns neither `model_version` (a scalar, same for
+  every row — sourced from `service.model_version` like `/score/batch`
+  already does) nor `top_reasons` (batch scoring never calls the SHAP
+  explainer at all, so this is explicitly `None` per row, not a bug); the
+  returned `claim_id`s are inserted as a column into the results table so
+  a reviewer can see, and later escalate, a claim by its real DB id.
+- Escalation now writes a `claim_escalated` `AuditLogEntry` (via
+  `persist_escalation()`) in addition to the existing
+  `st.session_state["escalated_rows"]` append (kept for the same-session
+  "escalated so far" table + CSV download — a real DB round-trip on every
+  keystroke isn't needed for that, only the escalation action itself).
+  `persist_escalation()` is deliberately **not**
+  `InvestigatorFeedback` — that table is a ground-truth
+  `confirmed_fraud` determination that feeds the retraining export
+  (`api/feedback.py`); "escalate for investigation" is a lighter-weight
+  "a human should look at this" and is recorded as its own audit-log
+  event type so the two are never conflated. Escalating now requires an
+  investigator name (new text input; falls back to the existing
+  `"dashboard_analyst"` placeholder if left blank, same fallback
+  `persist_escalation()` already had).
+- `db/models.py`'s `ingested_via` comment updated:
+  `api | batch_csv | dashboard | dashboard_batch` — the two new values
+  make it possible to tell, from the DB alone, which surface a given
+  claim actually came through.
+
+**Test isolation note.** `app/core/config.py`'s `DATABASE_URL` default
+points at a real file (`<project_root>/aegis.db`), and
+`get_db_session_factory()` is `@st.cache_resource` — a process-global
+cache. Without isolating it, every dashboard test run would silently
+accumulate rows in that real dev DB. New `dashboard/tests/conftest.py`
+sets `DATABASE_URL` to a throwaway per-run SQLite file *before* pytest
+collects anything, so `app.db.session` never imports the real path in
+the first place.
+
+`backend/tests/test_persistence.py` (new, 9 tests): each of the three
+`db/persistence.py` functions exercised directly against a throwaway
+SQLite session — correct Claim/ScoredClaim/AuditLogEntry rows and field
+values, distinct ids across a batch, the batch length-mismatch
+`ValueError`, an empty batch being a no-op rather than an error,
+escalation producing a `claim_escalated` entry (never an
+`InvestigatorFeedback` row), and the blank-name fallback.
+`dashboard/tests/test_dashboard_pages.py` gained two `AppTest`-based
+end-to-end checks: scoring a claim through the dashboard produces a
+queryable `Claim`+`ScoredClaim`+audit entry tagged `ingested_via="dashboard"`;
+uploading a batch persists every row with a matching `ScoredClaim`, and
+escalating one produces a `claim_escalated` audit entry with the
+submitted investigator name as `actor`.
+
+Tests: 89/89 backend (80 existing + 9 new), 7/7 dashboard (5 existing + 2
+new). No retrain needed — no ML code touched.

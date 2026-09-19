@@ -1,5 +1,13 @@
 """app_pages/score_claim.py — one-off claim scoring form, calls
-FraudScoringService IN-PROCESS (same instance the API uses)."""
+FraudScoringService IN-PROCESS (same instance the API uses).
+
+PB-12 (fixed): the scored result used to be shown and then discarded —
+nothing was written to the DB, so a claim scored here never showed up in
+`GET /claims`, the risk grid, or the audit log the way an API-scored
+claim did. Now persisted through `db/persistence.py`'s
+`persist_scored_claim()`, the exact same function `api/scoring.py`'s
+`POST /score` uses, tagged `ingested_via="dashboard"` so the audit trail
+can tell the two surfaces apart."""
 from __future__ import annotations
 
 import sys
@@ -15,7 +23,7 @@ if _dashboard_root not in sys.path:
     # the backend's app/ package (see components/data_access.py,
     # which puts backend/ at sys.path[0] once, on first import).
     sys.path.append(_dashboard_root)
-from components.data_access import get_scoring_service, models_are_available
+from components.data_access import get_scoring_service, models_are_available, new_db_session
 from components.theme import inject_css, page_header, risk_badge
 
 inject_css()
@@ -63,6 +71,16 @@ if submitted:
     result = service.score_one(payload)
     st.session_state["session_scored_count"] = st.session_state.get("session_scored_count", 0) + 1
 
+    # PB-12: persist, same as api/scoring.py's POST /score does.
+    from app.db.persistence import persist_scored_claim
+    db = new_db_session()
+    try:
+        claim = persist_scored_claim(db, payload, result, ingested_via="dashboard")
+        db.commit()
+        claim_id = claim.id
+    finally:
+        db.close()
+
     st.write("")
     c1, c2 = st.columns([1, 2])
     with c1:
@@ -70,6 +88,7 @@ if submitted:
         st.markdown(risk_badge(result["risk_grade"]), unsafe_allow_html=True)
         st.caption(f"Flagged: {'Yes' if result['flagged'] else 'No'} (threshold {result['operating_threshold']:.2f})")
         st.caption(f"Recommended action: {result['recommended_action']}")
+        st.caption(f"Saved as claim #{claim_id} — visible via the API's /claims/{claim_id} and the audit log.")
     with c2:
         st.markdown("**Top reasons (SHAP)**")
         for r in result["top_reasons"]:

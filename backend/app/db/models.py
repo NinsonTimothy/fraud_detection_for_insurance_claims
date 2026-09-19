@@ -27,7 +27,12 @@ class Claim(Base):
     # itself (and any historical "kafka" rows a pre-existing DB might
     # still have) is left alone; this is a comment/behavior change, not a
     # migration.
-    ingested_via = Column(String(32), nullable=False, default="api")  # api | batch_csv
+    # PB-12: "dashboard" / "dashboard_batch" added — the dashboard's
+    # Score/Batch review pages now persist through the same DB every other
+    # ingestion path uses (db/persistence.py), tagged distinctly from
+    # "api"/"batch_csv" so the audit trail can tell which surface a claim
+    # actually came through.
+    ingested_via = Column(String(32), nullable=False, default="api")  # api | batch_csv | dashboard | dashboard_batch
     received_at = Column(DateTime(timezone=True), default=utcnow, index=True)
 
     score = relationship("ScoredClaim", back_populates="claim", uselist=False)

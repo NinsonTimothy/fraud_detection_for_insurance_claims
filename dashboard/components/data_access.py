@@ -27,6 +27,30 @@ def get_scoring_service():
     return FraudScoringService.instance()
 
 
+@st.cache_resource
+def get_db_session_factory():
+    """PB-12: the dashboard's first-ever DB access — Score a claim/Batch
+    review used to call FraudScoringService directly and throw the result
+    away, so a claim scored from the dashboard never reached the same DB
+    the API/claims list/audit log read from. `init_db()` is idempotent
+    (`create_all()` only creates missing tables), and cheap enough to call
+    once per process here via `st.cache_resource` — needed because,
+    unlike the API (main.py's lifespan), nothing else guarantees the
+    dashboard's tables exist before its first write (docker-compose's
+    dashboard service does not depend on the api service)."""
+    from app.db.session import SessionLocal, init_db
+    init_db()
+    return SessionLocal
+
+
+def new_db_session():
+    """A fresh Session — call `.commit()` and `.close()` (or use as a
+    context manager) exactly like `api/db/session.py::get_db()`'s
+    request-scoped session, just without FastAPI's `Depends` machinery to
+    do that for you outside a request."""
+    return get_db_session_factory()()
+
+
 def models_are_available() -> bool:
     return (MODELS_DIR / "random_forest_final.pkl").exists()
 
