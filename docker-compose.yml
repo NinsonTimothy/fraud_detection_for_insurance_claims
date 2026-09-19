@@ -1,0 +1,86 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: aegis
+      POSTGRES_PASSWORD: aegis
+      POSTGRES_DB: aegis
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aegis"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  kafka:
+    image: apache/kafka:3.8.0
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      CLUSTER_ID: aegis-single-node-cluster
+
+  train-init:
+    build:
+      context: .
+      dockerfile: deployment/Dockerfile.backend
+    entrypoint: ["sh", "/srv/deployment/entrypoint-train.sh"]
+    volumes:
+      - ./deployment:/srv/deployment
+      - model-data:/srv/models
+      - processed-data:/srv/data/processed
+    environment:
+      DATABASE_URL: postgresql://aegis:aegis@postgres/aegis
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      dockerfile: deployment/Dockerfile.backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - model-data:/srv/models
+      - processed-data:/srv/data/processed
+    environment:
+      DATABASE_URL: postgresql://aegis:aegis@postgres/aegis
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      train-init:
+        condition: service_completed_successfully
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: deployment/Dockerfile.dashboard
+    ports:
+      - "8501:8501"
+    volumes:
+      - model-data:/srv/models
+      - processed-data:/srv/data/processed
+    environment:
+      DATABASE_URL: postgresql://aegis:aegis@postgres/aegis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      train-init:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
+  model-data:
+  processed-data:

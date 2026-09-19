@@ -1,0 +1,64 @@
+{
+  "primary_model": "random_forest",
+  "operating_threshold": 0.48,
+  "model_comparison": [
+    {
+      "model": "random_forest",
+      "threshold": 0.48,
+      "recall": 0.4897959183673469,
+      "precision": 0.5454545454545454,
+      "f1": 0.5161290322580645,
+      "pr_auc": 0.44995681452952946,
+      "roc_auc": 0.6563049060683877,
+      "accuracy": 0.775,
+      "confusion_matrix": {
+        "tn": 131,
+        "fp": 20,
+        "fn": 25,
+        "tp": 24
+      }
+    },
+    {
+      "model": "logistic_regression",
+      "threshold": 0.5,
+      "recall": 0.46938775510204084,
+      "precision": 0.5227272727272727,
+      "f1": 0.49462365591397844,
+      "pr_auc": 0.4279507546732507,
+      "roc_auc": 0.6584673604541155,
+      "accuracy": 0.765,
+      "confusion_matrix": {
+        "tn": 130,
+        "fp": 21,
+        "fn": 26,
+        "tp": 23
+      }
+    },
+    {
+      "model": "xgboost",
+      "threshold": 0.5,
+      "recall": 0.32653061224489793,
+      "precision": 0.5,
+      "f1": 0.39506172839506176,
+      "pr_auc": 0.4022218871782588,
+      "roc_auc": 0.6219759426949588,
+      "accuracy": 0.755,
+      "confusion_matrix": {
+        "tn": 135,
+        "fp": 16,
+        "fn": 33,
+        "tp": 16
+      }
+    }
+  ],
+  "cost_optimal_threshold": {
+    "threshold": 0.01,
+    "total_cost": 33000.0,
+    "recall": 1.0,
+    "precision": 0.27071823204419887
+  },
+  "n_train": 800,
+  "n_test": 200,
+  "n_features": 74,
+  "fraud_rate": 0.2475
+}
