@@ -97,6 +97,32 @@ RISKY_FEATURE_COLUMNS = [
 ]
 
 HIGH_RISK_HOBBIES = {"chess", "cross-fit"}
+
+# PB-19: the fixed, known vocabulary for `insured_hobbies`/`insured_occupation`
+# in the cleaned training data — the single source of truth for both
+# `HIGH_RISK_HOBBIES`'s membership check above (only meaningful for a
+# value that's actually in this set) and the dashboard's Score a claim
+# form, which used to accept these as free `st.text_input` fields with no
+# indication of which strings were even in the schema. A typo or
+# case-mismatch (e.g. "Chess" vs "chess") silently fails the `isin()`/`==`
+# checks above with INCLUDE_PROXY_FEATURES=true — reproduced directly:
+# `"Chess" in HIGH_RISK_HOBBIES` is False. Neither list changes with the
+# data unless the dataset itself changes (a fixed, closed categorical
+# schema, not something scoring-time input should be free-text over), so
+# hardcoding the literal values here — the same pattern this file already
+# uses for `SEVERITY_ORDINAL` — is deliberate, not a shortcut.
+KNOWN_HOBBIES = (
+    "base-jumping", "basketball", "board-games", "bungie-jumping", "camping",
+    "chess", "cross-fit", "dancing", "exercise", "golf", "hiking", "kayaking",
+    "movies", "paintball", "polo", "reading", "skydiving", "sleeping",
+    "video-games", "yachting",
+)
+KNOWN_OCCUPATIONS = (
+    "adm-clerical", "armed-forces", "craft-repair", "exec-managerial",
+    "farming-fishing", "handlers-cleaners", "machine-op-inspct",
+    "other-service", "priv-house-serv", "prof-specialty", "protective-serv",
+    "sales", "tech-support", "transport-moving",
+)
 # PB-24: this rank order is CONFIRMED, not inferred — the original FYP
 # project's own 02_preprocessing.ipynb / 03_modelling.ipynb encode
 # incident_severity with sklearn.OrdinalEncoder using this exact table

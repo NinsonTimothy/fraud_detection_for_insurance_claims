@@ -21,6 +21,7 @@ and interact with real widgets, not just import the module.
 """
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -40,6 +41,102 @@ def test_score_claim_submit_renders_probability_no_exception():
 
     headings = [md.value for md in at.markdown if "fraud probability" in md.value]
     assert headings, "expected a '### NN.N% fraud probability' heading to render"
+
+
+def test_score_claim_has_real_date_inputs_not_hardcoded():
+    """PB-19: incident_date/policy_bind_date used to be hardcoded
+    constants with no UI control at all. Both must now be real
+    st.date_input widgets, and their defaults must be internally
+    consistent (bind date on/before incident date, not the reverse)."""
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "score_claim.py"))
+    at.run(timeout=30)
+    assert not at.exception, [str(e) for e in at.exception]
+
+    labels = {d.label: d.value for d in at.date_input}
+    assert "Policy bind date" in labels
+    assert "Incident date" in labels
+    assert labels["Policy bind date"] <= labels["Incident date"]
+
+
+def test_score_claim_hobby_and_occupation_are_selectboxes_over_known_categories():
+    """PB-19: these used to be free st.text_input fields — now
+    st.selectbox over feature_engineering.KNOWN_HOBBIES/KNOWN_OCCUPATIONS,
+    so an analyst can't submit a value outside the model's actual known
+    vocabulary."""
+    import sys as _sys
+    _sys.path.insert(0, str((DASHBOARD_ROOT.parent / "backend")))
+    from app.ml.feature_engineering import KNOWN_HOBBIES, KNOWN_OCCUPATIONS
+
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "score_claim.py"))
+    at.run(timeout=30)
+    assert not at.exception, [str(e) for e in at.exception]
+
+    hobby_box = next(s for s in at.selectbox if s.label == "Insured hobby")
+    occupation_box = next(s for s in at.selectbox if s.label == "Insured occupation")
+    assert list(hobby_box.options) == list(KNOWN_HOBBIES)
+    assert list(occupation_box.options) == list(KNOWN_OCCUPATIONS)
+    assert hobby_box.value in KNOWN_HOBBIES
+    assert occupation_box.value in KNOWN_OCCUPATIONS
+
+
+def test_score_claim_uses_the_dates_actually_selected_not_a_constant():
+    """End-to-end reproduction: changing the date widgets away from their
+    defaults must change what actually gets scored (payload built from
+    `.isoformat()` of the live widget values), not silently keep sending
+    a hardcoded string regardless of what the form shows."""
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "score_claim.py"))
+    at.run(timeout=30)
+
+    bind_box = next(d for d in at.date_input if d.label == "Policy bind date")
+    incident_box = next(d for d in at.date_input if d.label == "Incident date")
+    # Set both in the SAME run — setting them across two separate .run()
+    # calls re-executes the script in between, which rebuilds every
+    # widget (including incident_date's min_value, derived from the
+    # live policy_bind_date) and leaves the `incident_box` reference
+    # captured above stale.
+    bind_box.set_value(date(2026, 1, 1))
+    incident_box.set_value(date(2026, 6, 1))
+    at.run(timeout=30)
+    at.button[0].click().run(timeout=30)
+    assert not at.exception, [str(e) for e in at.exception]
+
+    from app.db.models import Claim
+    from app.db.session import SessionLocal
+    db = SessionLocal()
+    try:
+        newest = db.query(Claim).filter(Claim.ingested_via == "dashboard").order_by(Claim.id.desc()).first()
+        assert newest.raw_payload["policy_bind_date"] == "2026-01-01"
+        assert newest.raw_payload["incident_date"] == "2026-06-01"
+    finally:
+        db.close()
+
+
+def test_score_claim_editing_bind_date_does_not_reset_incident_date():
+    """Reproduces a bug introduced (and fixed) while building PB-19 itself:
+    incident_date's min_value is derived from policy_bind_date's live
+    value, and without an explicit `key=` on both date_inputs, Streamlit
+    treated incident_date as a different widget once min_value changed —
+    silently discarding an already-entered incident_date and reverting it
+    to today(), across two SEPARATE reruns (not the same-run case the
+    previous test covers). An analyst who filled in Incident date, then
+    went back and adjusted Policy bind date, would have silently lost
+    their first entry with no indication anything changed."""
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "score_claim.py"))
+    at.run(timeout=30)
+
+    incident_box = next(d for d in at.date_input if d.label == "Incident date")
+    incident_box.set_value(date(2026, 6, 1))
+    at.run(timeout=30)
+    assert next(d for d in at.date_input if d.label == "Incident date").value == date(2026, 6, 1)
+
+    bind_box = next(d for d in at.date_input if d.label == "Policy bind date")
+    bind_box.set_value(date(2026, 1, 1))
+    at.run(timeout=30)
+    assert not at.exception, [str(e) for e in at.exception]
+
+    assert next(d for d in at.date_input if d.label == "Policy bind date").value == date(2026, 1, 1)
+    incident_after = next(d for d in at.date_input if d.label == "Incident date").value
+    assert incident_after == date(2026, 6, 1), f"Incident date silently reset to {incident_after} after editing Policy bind date"
 
 
 def test_batch_review_upload_scores_claims_no_exception():

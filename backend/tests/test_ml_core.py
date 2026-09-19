@@ -77,3 +77,20 @@ def test_missing_raw_columns_fall_back_to_documented_defaults():
         assert col in filled.columns
         if col != "age":
             assert filled[col].iloc[0] == default
+
+
+def test_known_hobbies_and_occupations_match_the_actual_training_data(sample_data):
+    """PB-19: KNOWN_HOBBIES/KNOWN_OCCUPATIONS (feature_engineering.py) are
+    a hardcoded snapshot of this dataset's categorical schema — the
+    dashboard's Score a claim form uses them to build selectboxes instead
+    of free-text fields. A hand-typed snapshot can drift from the real
+    data it's meant to describe (exactly the failure mode
+    docs/REBUILD_NOTES.md's working rules distrust hand-typed numbers
+    for); this test catches that drift directly against the actual
+    cleaned training data rather than trusting the snapshot."""
+    from app.ml.feature_engineering import KNOWN_HOBBIES, KNOWN_OCCUPATIONS
+    df, _ = sample_data
+    assert set(KNOWN_HOBBIES) == set(df["insured_hobbies"].unique())
+    assert set(KNOWN_OCCUPATIONS) == set(df["insured_occupation"].unique())
+    assert len(KNOWN_HOBBIES) == len(set(KNOWN_HOBBIES))  # no duplicates
+    assert len(KNOWN_OCCUPATIONS) == len(set(KNOWN_OCCUPATIONS))

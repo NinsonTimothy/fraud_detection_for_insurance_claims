@@ -1246,3 +1246,87 @@ Tests: 105/105 backend (98 existing + 7 new), 7/7 dashboard (unaffected
 — `batch_review.py`'s change is a data pass-through, no new page logic
 that AppTest wasn't already exercising). No retrain needed — no model
 or feature-engineering code touched.
+
+### 24. Dashboard: hardcoded dates, free-text hobby/occupation (PB-19)
+
+Reproduced directly: `score_claim.py` sent `incident_date="2024-06-15"`,
+`policy_bind_date="2018-01-01"` for **every** claim scored through the
+dashboard, completely independent of `months_as_customer` or anything
+else the analyst entered — no UI control over either field existed at
+all. `feature_engineering.py` derives two real model features from these
+two raw fields (`policy_age_days`, `vehicle_age_at_incident`), so this
+wasn't cosmetic: scoring the identical claim (`months_as_customer=6`)
+through the always-hardcoded dates vs. through dates actually consistent
+with a 6-month-old policy changed `fraud_probability` by ~0.003 — small
+on this dataset's feature-importance profile, but a real, silent,
+non-zero effect a dashboard-scored claim had that an API-scored claim
+(which lets a caller supply real dates) didn't.
+
+`insured_hobbies`/`insured_occupation` were free `st.text_input` fields
+with no indication of the schema's actual vocabulary. Checked what
+influence they currently have on the shipped model: **none**, by
+design — `feature_engineering.py`'s own module docstring documents that
+full one-hot encoding of these two columns was deliberately dropped
+(an earlier attempt cross-validated at 0.94 ROC-AUC but collapsed to
+0.59-0.78 on a genuine holdout split, a high-cardinality/low-row-count
+overfitting signature); their only remaining path into the model is the
+two flags SH-02/D3 gates behind `INCLUDE_PROXY_FEATURES` (off by
+default). Confirmed directly: scoring the same claim with
+`insured_hobbies` set to `"reading"`, `"chess"`, and an outright typo
+all produced the identical `fraud_probability` under the default config.
+So free text here wasn't silently corrupting today's shipped score — but
+it's still a real, disclosed-now risk for `INCLUDE_PROXY_FEATURES=true`
+(a typo or case-mismatch silently fails the `isin()`/`==` checks
+`is_highrisk_hobby`/`is_exec_occupation` are built from), and a
+misleading UI either way: a field that looks like it matters and quietly
+doesn't is its own kind of dishonesty this project tries not to ship.
+
+**Fix.** Two new `st.date_input` widgets replace the hardcoded literals.
+`policy_bind_date` defaults to `months_as_customer` months before today
+(not a disconnected constant) but stays freely editable; `incident_date`
+defaults to today and enforces `min_value=policy_bind_date`
+(`feature_engineering.py`'s own comment already flags incident-before-bind
+as a data issue — a negative "policy age" — so the form doesn't let an
+analyst build another instance of it). `insured_hobbies`/
+`insured_occupation` are now `st.selectbox`es over two new constants,
+`feature_engineering.KNOWN_HOBBIES`/`KNOWN_OCCUPATIONS` — the actual
+20/14-value vocabulary from the cleaned training data, defined once
+(module-level, same pattern as the existing `HIGH_RISK_HOBBIES`/
+`SEVERITY_ORDINAL`) so the UI and the model layer's own membership
+checks can't drift apart. A new caption discloses, when
+`INCLUDE_PROXY_FEATURES` is off, that hobby/occupation currently don't
+affect the score — turning the "looks like it matters, doesn't" gap into
+an honestly-stated one instead of a silent one.
+
+**A bug introduced and caught while building this fix.** Making
+`incident_date`'s `min_value` track `policy_bind_date`'s live value
+created a NEW problem: neither `st.date_input` call had an explicit
+`key=`, so Streamlit derived each widget's identity partly from its own
+call arguments — meaning `incident_date`'s identity changed whenever
+`policy_bind_date`'s value did, and Streamlit silently discarded any
+already-entered `incident_date` and reset it to `today()`. Reproduced
+directly against a bare `AppTest` session: set Incident date, rerun, set
+Policy bind date, rerun — Incident date silently reverted. Fixed by
+giving both widgets explicit, stable `key=` values so one widget's state
+no longer resets when the other's arguments change. Caught by writing
+the regression test for the fix itself, before this ever reached a real
+user — the kind of thing this project's "reproduce before you fix, then
+prove the fix" discipline is specifically for.
+
+`backend/app/ml/feature_engineering.py` gained `KNOWN_HOBBIES`/
+`KNOWN_OCCUPATIONS`. `backend/tests/test_ml_core.py` (+1): both constants
+checked directly against the real cleaned training data's unique values
+(catches drift if the dataset ever changes, rather than trusting a
+hand-typed snapshot indefinitely). `dashboard/tests/test_dashboard_pages.py`
+(+4): both date fields are real `st.date_input` widgets with a
+self-consistent default ordering; hobby/occupation are `st.selectbox`es
+over exactly `KNOWN_HOBBIES`/`KNOWN_OCCUPATIONS`; changing the date
+widgets away from their defaults changes what's actually persisted (not
+a hardcoded string regardless of the form); and the `key=` fix itself —
+editing Policy bind date after Incident date was already set must NOT
+reset Incident date.
+
+Tests: 106/106 backend (105 existing + 1 new), 11/11 dashboard (7
+existing + 4 new). No retrain needed — no feature-engineering
+*computation* changed, only two new documented constants and the
+dashboard's own input handling.
