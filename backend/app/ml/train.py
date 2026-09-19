@@ -313,6 +313,15 @@ def main():
         json.dump(metrics, f, indent=2)
 
     X_test_scaled.assign(y_true=y_test.values, y_proba=rf_proba_test).to_csv(PROCESSED_DIR / "risk_scores_test.csv", index=False)
+    # PB-10: a SEPARATE, UNSCALED snapshot of the test features, for PSI/
+    # drift comparisons only. risk_scores_test.csv's feature columns are
+    # StandardScaler-transformed (z-scores, mean~0/std~1) — comparing
+    # those against another dataset's RAW engineered features (e.g.
+    # X_oracle in evaluate_oracle.py) via PSI is an apples-to-oranges
+    # scale mismatch that produces meaningless, wildly inflated PSI
+    # values. See evaluate_oracle.py and docs/REBUILD_NOTES.md for the
+    # reproduction.
+    X_test.assign(y_true=y_test.values).to_csv(PROCESSED_DIR / "psi_reference_features.csv", index=False)
 
     print(json.dumps({k: v for k, v in metrics.items() if k not in ("model_comparison",)}, indent=2))
     print()

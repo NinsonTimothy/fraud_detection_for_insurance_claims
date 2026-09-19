@@ -511,3 +511,106 @@ scores successfully end-to-end.
 
 Tests: 45/45 backend (39 existing + 6 new), 3/3 dashboard. No retrain
 needed — this ticket only touches API error handling.
+
+### 15. Invalid PSI/drift comparison — scaled vs. unscaled, then a masked boolean-dtype crash (PB-10)
+
+Two bugs, found back-to-back: fixing the first one exposed the second.
+
+**Bug 1 — scale mismatch.** `evaluate_oracle.py`'s Oracle-vs-internal PSI
+comparison read `risk_scores_test.csv` as the "reference" distribution and
+compared it against `X_oracle`'s engineered features via `psi_report()`.
+`risk_scores_test.csv`'s feature columns are `X_test_scaled` —
+StandardScaler output (z-scores, mean~0/std~1) — while `X_oracle` is raw,
+unscaled engineered features. Comparing a z-scored reference against an
+unscaled comparison is an apples-to-oranges scale mismatch: PSI's
+quantile bucket edges are computed from the reference distribution, so
+buckets built from a mean-0/std-1 reference put nearly all of the
+unscaled comparison's real-world-range values into the extreme outlier
+buckets, inflating PSI to meaningless numbers.
+
+Reproduced directly (`age`, scaled reference vs. unscaled comparison):
+
+```
+risk_scores_test.csv['age']  (X_test_scaled): mean=-0.037, std=1.018, range [-2.20, 2.52]
+X_oracle['age']  (raw, unscaled):              mean=40.67, std=12.18, range [16, 80]
+psi_numeric(scaled reference, unscaled comparison) = 6.919010289567263
+```
+
+A PSI of 6.9 is nonsensical — PSI is conventionally read on a roughly
+0-2 scale, and anything >= 0.2 is already "significant drift". The fair,
+apples-to-apples comparison (raw `age` from `insurance_claims_cleaned.csv`
+as reference vs. raw `X_oracle['age']`) gives:
+
+```
+psi_numeric(unscaled reference, unscaled comparison) = 0.047929208048615723   -> "no significant shift"
+```
+
+**Fix.** `train.py` now writes a second, dedicated artifact,
+`data/processed/psi_reference_features.csv` — `X_test` (unscaled, not
+`X_test_scaled`) plus `y_true` — immediately alongside the existing
+`risk_scores_test.csv` write. `risk_scores_test.csv` itself is untouched
+(the dashboard's `/monitoring/drift` endpoint still legitimately reads it,
+but only compares `y_proba`, an unscaled 0-1 probability on both sides —
+no bug there, confirmed by reading `api/monitoring.py`). `evaluate_oracle.py`
+now reads `psi_reference_features.csv` instead of `risk_scores_test.csv`
+for its `internal_test` reference frame, so both sides of the PSI
+comparison are raw engineered feature values.
+
+**Bug 2 — boolean-dtype crash, found while validating the fix above.**
+Re-running `python -m app.ml.evaluate_oracle` after the Bug 1 fix crashed:
+
+```
+TypeError: numpy boolean subtract, the `-` operator, is not supported, use the
+bitwise_xor, the `^` operator, or the logical_xor function instead
+```
+
+Traceback: `psi.py`'s `_bucket_edges()` -> `reference.quantile(quantiles)`
+-> pandas' `Block.quantile()` -> numpy's `_lerp()` -> `b - a` on a boolean
+array. Root cause: `psi_reference_features.csv`'s one-hot columns are
+bool dtype — pandas 3.0.2's `pd.get_dummies()` now emits bool (not the
+historical uint8/int8), and `to_csv()`/`read_csv()` round-trips bool
+columns as `"True"`/`"False"` text, correctly re-inferred back to bool
+dtype on read. `pd.api.types.is_numeric_dtype()` returns `True` for bool
+Series (bool is a numeric subtype in pandas' type system), so
+`psi_report()` was routing bool columns into `psi_numeric()`, which calls
+`.quantile()` — and numpy's quantile interpolation cannot subtract
+booleans.
+
+This bug was **latent, not new**: it existed before Bug 1's fix too, but
+was accidentally masked, because the old (buggy) reference,
+`risk_scores_test.csv`, is StandardScaler output — every column is
+float64 by construction, so `.quantile()` was never called on a bool
+Series. Fixing the scale mismatch by switching to
+`psi_reference_features.csv` (which does have real bool-dtype one-hot
+columns) is what surfaced it.
+
+**Fix.** `psi.py`'s `psi_report()` now excludes bool dtype from its
+numeric-vs-categorical routing check (`is_numeric_dtype(...) and not
+is_bool_dtype(...)`), sending bool columns to `psi_categorical()`
+instead. This is also the semantically correct choice independent of the
+crash: a 0/1 one-hot flag is fundamentally a category, not a continuous
+quantity to bucket into quantiles.
+
+**Verification.** Re-ran `python -m app.ml.evaluate_oracle` end-to-end
+after both fixes: no crash, and `age`'s PSI came out `0.048908` (matches
+the 0.048 hand-reproduction above almost exactly, `significant_drift:
+false`) — the honest number, no longer the 6.9 artifact. Other
+`ORACLE_REAL_FIELDS` (e.g. `auto_year`, `policy_deductable`, `witnesses`)
+still show high PSI (6-8) — that's a genuine population difference
+between the two datasets on those fields, not a scale-mismatch artifact,
+and is expected: it is the same "different population" story already
+documented for the Oracle external-validation collapse elsewhere in this
+file, not something this ticket is meant to fix.
+
+`backend/tests/test_psi.py` (new) locks in both fixes: `psi_numeric` on
+matched vs. shifted synthetic distributions; `psi_report()` no longer
+crashes on boolean columns and routes them to `psi_categorical()`
+(checked against calling `psi_categorical()` directly); and, when
+`psi_reference_features.csv` exists, that its `age` column is on a raw
+human scale (not z-scored) and that its one-hot columns really are bool
+dtype (the exact fixture this bug lives in).
+
+Tests: 51/51 backend (45 existing + 6 new), 3/3 dashboard. Retrained
+(`python -m app.ml.train`) to regenerate `psi_reference_features.csv`;
+holdout ROC-AUC unchanged at 0.849439 as expected (PB-10 touches no
+features or model code).

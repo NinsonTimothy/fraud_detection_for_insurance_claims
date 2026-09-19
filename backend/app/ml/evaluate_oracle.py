@@ -77,7 +77,16 @@ def evaluate_shipped_model_on_oracle():
 
     psi_cols = [c for c in ORACLE_REAL_FIELDS if c in X_oracle.columns] + \
         [c for c in X_oracle.columns if any(c.startswith(f) for f in ORACLE_REAL_FIELDS)]
-    internal_test = pd.read_csv(PROCESSED_DIR / "risk_scores_test.csv")
+    # PB-10 (fixed): this used to read risk_scores_test.csv, whose feature
+    # columns are StandardScaler-SCALED (z-scores) — compared against
+    # X_oracle's UNSCALED engineered features, that's a scale mismatch
+    # that inflates PSI to meaningless values (reproduced: PSI("age")
+    # came out ~6.9 comparing scaled-vs-unscaled, vs. ~0.05 — "no
+    # significant shift" — comparing unscaled-vs-unscaled correctly).
+    # psi_reference_features.csv holds the UNSCALED test features
+    # specifically for this comparison, so both sides are on the same
+    # scale (raw engineered feature values).
+    internal_test = pd.read_csv(PROCESSED_DIR / "psi_reference_features.csv")
     psi_cols = [c for c in set(psi_cols) if c in internal_test.columns]
     psi_df = psi_report(internal_test, X_oracle, psi_cols) if psi_cols else pd.DataFrame()
 
