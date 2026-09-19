@@ -143,3 +143,23 @@ normal Docker Hub access, `docker compose up --build` should work
 end-to-end without further changes — this was not independently verified
 end-to-end outside the sandbox, so budget time to debug on first real run
 the way any un-execute-tested deployment config deserves.
+
+**Fixed in this pass (PB-13, D2 — SQLite default, Postgres optional):**
+`postgres`'s `5432` used to be published to the host (`"5432:5432"`) for
+no reason this topology needs — every consumer reaches it over the
+compose-internal network by service name — while carrying the default
+`aegis`/`aegis` credentials; the mapping is gone, so a `docker compose up`
+no longer exposes a trivially-guessable-credential DB to the host
+network by default. Those credentials were also hardcoded in four
+separate places (the `postgres` service plus `api`/`dashboard`/
+`train-init`'s `DATABASE_URL`s) with no override mechanism; all four now
+read `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` (or a full
+`DATABASE_URL` override) from the shell/`.env.example` so they can't
+drift apart and can be changed in one place. `train-init` (runs
+`clean_data.py`/`train.py`/`evaluate_oracle.py` — none of which import
+anything DB-related, verified by inspection) no longer waits on
+Postgres's healthcheck or carries an unused `DATABASE_URL`, so training
+isn't blocked by, or made to fail alongside, a database it never
+touches. None of this changes `config.py`'s own SQLite-by-default
+behavior — it was already true, just not documented as the deliberate
+D2 decision it is; see `docs/REBUILD_NOTES.md`.

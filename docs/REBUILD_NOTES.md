@@ -1095,3 +1095,77 @@ submitted investigator name as `actor`.
 
 Tests: 89/89 backend (80 existing + 9 new), 7/7 dashboard (5 existing + 2
 new). No retrain needed — no ML code touched.
+
+### 22. Docker/deployment config — credentials, ports, train-init (PB-13, D2)
+
+Reproduced directly against the pre-fix `docker-compose.yml`:
+
+- `postgres` published `5432:5432` to the host with the default
+  `aegis`/`aegis` credentials, even though every actual consumer
+  (`api`, `dashboard`, `train-init`) reaches it over the compose-internal
+  network by service name — the host publish bought nothing for this
+  topology and needlessly exposed a trivially-guessable-credential DB to
+  whatever network the host sits on.
+- The same `aegis`/`aegis` credentials were hardcoded in **four**
+  separate places — the `postgres` service's own `environment:` block,
+  plus `postgresql://aegis:aegis@postgres/aegis` copy-pasted into
+  `train-init`, `api`, and `dashboard`'s `DATABASE_URL` — with no
+  override mechanism at all, unlike `AEGIS_API_KEY` (PB-11), which
+  already used the `${VAR:-default}` pattern. Rotating a password meant
+  editing four lines by hand and hoping they stayed in sync.
+- `train-init` (runs `clean_data.py` -> `train.py` ->
+  `evaluate_oracle.py`) carried both a `DATABASE_URL` env var and
+  `depends_on: postgres: condition: service_healthy` — verified by grep
+  that all three of those modules have zero references to
+  `db`/`DATABASE_URL`/`SessionLocal`/`get_db`. Training was made to wait
+  on, and fail alongside, a database it never opens a connection to.
+- Despite the project's own D2 decision ("SQLite default DB, Postgres
+  optional"), nothing in the repo said so anywhere `docker-compose.yml`
+  was actually read — a reader had no way to know Postgres wasn't a hard
+  requirement of the DB access layer itself, just this file's own choice
+  of reference datastore.
+
+**Fix.** `postgres`'s `ports:` mapping removed entirely — nothing needs
+it published for `docker compose up` to work; a GUI client wanting
+direct access can still get it via `docker compose port postgres 5432`
+or by adding the mapping back locally. `POSTGRES_USER`/
+`POSTGRES_PASSWORD`/`POSTGRES_DB` now read from the shell/`.env` (default
+`aegis`/`aegis`/`aegis`, same visibly-insecure defaults as before —
+D2/PB-11's "make 'nobody configured a real secret' a visible fact"
+reasoning applies here too), and `api`/`dashboard`'s `DATABASE_URL` is
+now *built from those same three variables*
+(`${DATABASE_URL:-postgresql://${POSTGRES_USER:-aegis}:${POSTGRES_PASSWORD:-aegis}@postgres/${POSTGRES_DB:-aegis}}`)
+instead of a fourth hand-typed copy — verified with `docker compose
+config` that overriding `POSTGRES_PASSWORD` alone updates the
+`postgres` service's own env AND both `DATABASE_URL`s identically, and
+that setting `DATABASE_URL` directly overrides the whole composed
+string (e.g. to a `sqlite:///` path, to skip Postgres entirely — this is
+what makes D2's "Postgres optional" actually exercisable from
+`docker-compose.yml`, not just true of `config.py` in isolation).
+`train-init`'s `DATABASE_URL` env var and `depends_on: postgres` were
+both removed — it now only depends on its own image and the two volumes
+it writes into, so training is neither delayed by Postgres's healthcheck
+nor made to fail if Postgres has any startup issue. New `.env.example`
+documents every overridable variable (`AEGIS_API_KEY`, the three
+`POSTGRES_*`, and the `DATABASE_URL` full-override escape hatch).
+README's Docker Compose section and `docs/LIMITATIONS.md` both updated
+to state D2 explicitly rather than leave it implicit.
+
+`backend/tests/test_deployment_config.py` (new, 9 tests, skipped
+wherever the `docker` CLI is unavailable — CI's `ubuntu-latest` runner
+has it): shells out to `docker compose config --format json` (stdlib
+`json` only, no PyYAML dependency) against the real
+`docker-compose.yml` and asserts — postgres has no published port;
+api/dashboard keep theirs (8000/8501); train-init has neither a
+postgres `depends_on` nor a `DATABASE_URL`; a source-level check that
+`clean_data.py`/`train.py`/`evaluate_oracle.py` really do never
+reference anything DB-related (the claim the train-init test relies
+on); `DATABASE_URL` composes correctly from default and
+overridden `POSTGRES_*` values without drifting between `api` and
+`dashboard`; a full `DATABASE_URL` override takes precedence; and
+`.env.example` documents every variable the compose file actually
+reads.
+
+Tests: 98/98 backend (89 existing + 9 new), 7/7 dashboard (unaffected —
+no Python code touched). No retrain needed — pure deployment-config
+change.

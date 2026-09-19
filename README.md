@@ -65,6 +65,17 @@ See `docs/LIMITATIONS.md` for the precise disclosure. Budget time to
 debug on first real run, the way any un-execute-tested deployment config
 deserves.
 
+Postgres here is the reference "production-like" datastore, not a hard
+requirement (D2, PB-13 in `docs/REBUILD_NOTES.md`) — `db/session.py`
+falls back to a local SQLite file the moment nothing overrides
+`DATABASE_URL`, the same as the no-Docker quickstart above. Copy
+`.env.example` to `.env` to set real `AEGIS_API_KEY`/`POSTGRES_*` values
+(or a full `DATABASE_URL` override, e.g. a `sqlite:///` path, to skip
+Postgres entirely) — every value has a visibly-insecure default if you
+don't. Postgres's `5432` is intentionally not published to the host;
+`api`/`dashboard`/`train-init` reach it over the compose network by
+service name.
+
 ## Repository structure
 
 ```
