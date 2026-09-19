@@ -1,10 +1,18 @@
-"""api/claims.py — claims list / risk-grid view for the review queue."""
+"""api/claims.py — claims list / risk-grid view for the review queue.
+
+PB-11 (fixed): both endpoints below returned `raw_payload` verbatim,
+including `insured_zip` (a quasi-identifier — see core/security.py's
+module docstring). Reproduced directly: a fresh, unauthenticated
+`TestClient` could `GET /claims` and read back every stored claim's real
+ZIP. Fixed with `mask_pii()`, applied at the response boundary only —
+what's stored in the DB and what scoring reads are both untouched."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
+from app.core.security import mask_pii
 from app.db.models import Claim, ScoredClaim
 from app.db.session import get_db
 
@@ -23,7 +31,7 @@ def list_claims(risk_grade: str | None = None, flagged_only: bool = False, limit
         {
             "claim_id": c.id, "external_ref": c.external_ref, "received_at": c.received_at.isoformat(),
             "fraud_probability": s.fraud_probability, "risk_grade": s.risk_grade, "flagged": s.flagged,
-            "raw_payload": c.raw_payload,
+            "raw_payload": mask_pii(c.raw_payload),
         }
         for c, s in rows
     ]
@@ -36,7 +44,7 @@ def get_claim(claim_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "claim not found")
     score = claim.score
     return {
-        "claim_id": claim.id, "raw_payload": claim.raw_payload, "ingested_via": claim.ingested_via,
+        "claim_id": claim.id, "raw_payload": mask_pii(claim.raw_payload), "ingested_via": claim.ingested_via,
         "received_at": claim.received_at.isoformat(),
         "score": None if not score else {
             "fraud_probability": score.fraud_probability, "risk_grade": score.risk_grade,

@@ -46,6 +46,12 @@ services:
       - processed-data:/srv/data/processed
     environment:
       DATABASE_URL: postgresql://aegis:aegis@postgres/aegis
+      # PB-11: set AEGIS_API_KEY in your shell or a .env file before
+      # `docker compose up` for a real deployment — this falls back to
+      # config.py's own documented, obviously-insecure placeholder
+      # otherwise (intentional: makes "nobody set a real key" visible
+      # rather than silently working with a default that LOOKS secure).
+      AEGIS_API_KEY: ${AEGIS_API_KEY:-CHANGE-ME-insecure-default-api-key}
     depends_on:
       postgres:
         condition: service_healthy

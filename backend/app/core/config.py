@@ -16,6 +16,16 @@ DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{PROJECT_ROOT / 'aegis
 
 ANALYST_REVIEW_COST = float(os.environ.get("FP_REVIEW_COST", "250.0"))
 
+# PB-11: a single shared-secret API key, checked by core/security.py's
+# require_api_key() dependency on every business router. The fallback
+# value is INTENTIONALLY an obvious, documented placeholder, not a
+# generated secret — this makes "nobody set AEGIS_API_KEY" a visible,
+# grep-able fact about a deployment rather than a silently-working
+# default that looks secure but isn't. Any real deployment MUST set
+# AEGIS_API_KEY; docker-compose.yml's api service does not currently set
+# one either (see docs/LIMITATIONS.md), which is itself disclosed there.
+API_KEY = os.environ.get("AEGIS_API_KEY", "CHANGE-ME-insecure-default-api-key")
+
 # SH-02 / D3: `is_highrisk_hobby` and `is_exec_occupation` (feature_engineering.py's
 # RISKY_FEATURE_COLUMNS) encode a lifestyle/occupation -> risk association
 # with no causal fraud mechanism behind it (see that file's module

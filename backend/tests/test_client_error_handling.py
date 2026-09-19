@@ -26,14 +26,20 @@ VALID_CLAIM = {
 }
 
 
+TEST_API_KEY = "test-suite-api-key"
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/test.db")
+    # PB-11: see test_api.py's fixture docstring — every business endpoint
+    # now requires X-API-Key.
+    monkeypatch.setenv("AEGIS_API_KEY", TEST_API_KEY)
     for mod in list(sys.modules):
         if mod.startswith("app."):
             del sys.modules[mod]
     from app.main import app
-    with TestClient(app) as c:
+    with TestClient(app, headers={"X-API-Key": TEST_API_KEY}) as c:
         yield c
 
 

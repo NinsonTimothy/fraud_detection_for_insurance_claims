@@ -50,7 +50,17 @@ def submit_feedback(feedback_in: FeedbackIn, db: Session = Depends(get_db)):
 def export_feedback_csv(db: Session = Depends(get_db)):
     """Manual retraining loop (disclosed, not automatic — see
     docs/LIMITATIONS.md): export this CSV, append confirmed labels to the
-    training set, re-run `python -m app.ml.train`."""
+    training set, re-run `python -m app.ml.train`.
+
+    PB-11: unlike claims.py's read endpoints, this one deliberately does
+    NOT mask `insured_zip` — masking it here would write a corrupted
+    string into a file meant to be appended straight into the real
+    training data, which `feature_engineering.py` reads `insured_zip`
+    from directly (unused by any engineered feature today, but the raw
+    column stays real and unmangled in case that changes). What actually
+    closes the PB-11 gap for this endpoint is that it's no longer
+    reachable with no credential at all — it now requires the same
+    `X-API-Key` as every other business endpoint (main.py)."""
     rows = db.query(InvestigatorFeedback, Claim).join(Claim, Claim.id == InvestigatorFeedback.claim_id).all()
     records = [
         {**c.raw_payload, "fraud_reported": "Y" if fb.confirmed_fraud else "N",

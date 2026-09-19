@@ -17,9 +17,10 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 from app.api import audit, claims, feedback, monitoring, scoring
+from app.core.security import require_api_key
 from app.db.models import AuditLogEntry
 from app.db.session import SessionLocal, init_db
 from app.ml.inference import FraudScoringService
@@ -62,8 +63,15 @@ def health():
     return {"status": "ok", "model_version": service.model_version, "operating_threshold": service.operating_threshold}
 
 
-app.include_router(scoring.router)
-app.include_router(claims.router)
-app.include_router(feedback.router)
-app.include_router(audit.router)
-app.include_router(monitoring.router)
+
+# PB-11: every business router requires a matching X-API-Key header
+# (core/security.py) — /health and the auto-generated docs routes above
+# stay open, standard practice for infra health checks. Wired centrally
+# here rather than per-router so no endpoint can be added later without
+# it (one place to audit, not N).
+_auth = [Depends(require_api_key)]
+app.include_router(scoring.router, dependencies=_auth)
+app.include_router(claims.router, dependencies=_auth)
+app.include_router(feedback.router, dependencies=_auth)
+app.include_router(audit.router, dependencies=_auth)
+app.include_router(monitoring.router, dependencies=_auth)

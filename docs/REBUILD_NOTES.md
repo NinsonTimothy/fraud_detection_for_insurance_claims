@@ -914,3 +914,77 @@ Tests: 71/71 backend (5 fewer than before this ticket — `test_kafka_logic.py`'
 route-is-gone test — net -5, not a regression), 5/5 dashboard (dashboard
 never referenced Kafka, unaffected). No retrain needed — this ticket only
 removes an unused ingestion path, no ML code touched.
+
+### 20. API-key auth + PII masking (PB-11)
+
+Reproduced directly: a fresh, completely unauthenticated `TestClient` —
+no headers at all — could hit every endpoint, including `GET /claims`,
+which returned every stored claim's full `raw_payload` verbatim,
+including `insured_zip`. This schema has no name/SSN/DOB field at all,
+but a full ZIP is itself a quasi-identifier (HIPAA's Safe Harbor rule
+treats it the same way, alongside age/sex — both of which this payload
+also carries) that none of this API's actual use cases need in a
+response body: scoring only ever needs the real value in-process.
+
+**Fix — auth.** New `app/core/security.py`: `require_api_key()`, a
+FastAPI dependency built on `fastapi.security.APIKeyHeader` (so it shows
+up as a proper "Authorize" button in `/docs`, not an undocumented
+header), checked with `hmac.compare_digest` (avoids a timing
+side-channel on the comparison — a real, if minor, thing to get right
+even for a single shared secret). Wired centrally in `main.py` via
+`app.include_router(..., dependencies=[Depends(require_api_key)])` for
+every business router (scoring, claims, feedback, audit, monitoring) —
+one place to audit, not N, and nothing added later can accidentally skip
+it. `/health` and the auto-generated docs routes stay open (standard
+practice — a health check needs to be reachable before any credential is
+provisioned). The key itself: `app/core/config.py`'s `API_KEY`, from
+`AEGIS_API_KEY`, falling back to a deliberately obvious placeholder
+(`CHANGE-ME-insecure-default-api-key`) — this makes "nobody set a real
+key" a visible, grep-able fact about a deployment rather than a
+silently-working default that looks secure but isn't.
+`docker-compose.yml`'s `api` service now sets it from
+`${AEGIS_API_KEY:-CHANGE-ME-insecure-default-api-key}` (`docker compose
+config` re-validated clean).
+
+**Fix — PII masking.** `mask_pii()` (same module) redacts `insured_zip`
+(e.g. `468000` -> `"46XXXX"`), applied at the response boundary only in
+`api/claims.py`'s `GET /claims` and `GET /claims/{id}` — what's stored in
+the DB and what scoring reads from the request payload are both
+untouched, and the function returns a copy, never mutates its input.
+`api/feedback.py`'s `GET /feedback/export` deliberately does NOT mask
+it — that endpoint's entire purpose is producing a CSV meant to be
+appended straight into the real training data (`feature_engineering.py`
+reads `insured_zip` from `RAW_FEATURE_COLUMNS` directly, even though no
+engineered feature currently derives from it), so masking there would
+write a corrupted value into training data for no benefit; what actually
+closes the PB-11 gap for that endpoint is that it's no longer reachable
+without the same API key as everything else. This scoping is disclosed
+explicitly in the endpoint's own docstring and in
+`docs/LIMITATIONS.md`, not left for a reader to wonder why one endpoint
+looks "unfixed."
+
+**What this is not.** A single, deployment-wide shared secret — not
+per-user auth, not RBAC, not encryption at rest. Genuinely out of scope
+for a thesis-scale project and disclosed as such in
+`docs/LIMITATIONS.md`; what this ticket closes is specifically
+"reachable with literally zero credential at all."
+
+**Test fixture impact.** Every existing `TestClient`-based test file
+(`test_api.py`, `test_input_validation.py`, `test_client_error_handling.py`)
+now sets `AEGIS_API_KEY` via `monkeypatch.setenv()` and constructs its
+`TestClient` with a matching `X-API-Key` header by default, so those
+files keep exercising the endpoint logic they were originally written
+for rather than all failing on 401 — auth itself is covered separately.
+
+`backend/tests/test_auth.py` (new): missing/wrong API key -> 401 on
+representative business endpoints across every router; correct key ->
+200; `/health`/`/openapi.json` need no key at all; `GET /claims` and
+`GET /claims/{id}` both mask `insured_zip`; `mask_pii()` doesn't mutate
+its input and handles a missing/`None` zip gracefully; a source-level
+guard that `require_api_key()` still uses `hmac.compare_digest` (against
+someone "simplifying" it back to `==` later).
+
+Tests: 80/80 backend (71 existing + 9 new), 5/5 dashboard (the dashboard
+calls `FraudScoringService` in-process, never over HTTP — confirmed by
+inspection, not just assumed — so it's entirely unaffected by this
+ticket). No retrain needed — no ML code touched.

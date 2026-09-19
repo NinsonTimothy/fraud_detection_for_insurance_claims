@@ -27,10 +27,14 @@ pip install -r requirements.txt
 python -m app.ml.clean_data        # -> data/cleaned/insurance_claims_cleaned.csv
 python -m app.ml.train             # trains RF/LR/XGB, saves models/, ~30s
 python -m app.ml.evaluate_oracle   # external validation + stress test, ~1min
-pytest tests/ -q                   # 16 tests, all should pass
+pytest tests/ -q                   # all should pass (see the test file list above for coverage)
 
-uvicorn app.main:app --reload --port 8000   # API at http://localhost:8000/docs
+export AEGIS_API_KEY=dev-local-key                    # PB-11: every business endpoint needs this header
+uvicorn app.main:app --reload --port 8000              # API at http://localhost:8000/docs — /health needs no key
 ```
+
+`curl -H "X-API-Key: $AEGIS_API_KEY" http://localhost:8000/claims` — every endpoint except `/health` and the docs routes
+needs that header (see `docs/LIMITATIONS.md`'s "No authentication" bullet for what this is and isn't).
 
 In a second terminal:
 

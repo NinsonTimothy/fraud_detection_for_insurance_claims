@@ -72,10 +72,19 @@ proactively than when a panel member finds them first.
 
 ## Engineering
 
-- **No authentication/authorization on the API.** Anyone who can reach
-  `:8000` can score claims, read the audit log, and export investigator
-  feedback. Fine for a thesis demo; would need real auth for any actual
-  deployment.
+- ~~No authentication/authorization on the API. Anyone who can reach
+  :8000 can score claims, read the audit log, and export investigator
+  feedback.~~ — **resolved (PB-11):** every business endpoint (scoring,
+  claims, feedback, audit, monitoring — `/health` and the auto-generated
+  docs routes stay open) now requires a matching `X-API-Key` header
+  (`app/core/security.py`, `app/core/config.py`'s `AEGIS_API_KEY`,
+  `docker-compose.yml`'s `api` service). This is a single, deployment-wide
+  shared secret, not per-user auth/RBAC — genuinely still out of scope for
+  a thesis-scale project, and disclosed as such, but "reachable with zero
+  credential at all" is closed. The shipped default
+  (`CHANGE-ME-insecure-default-api-key`) is deliberately an obvious
+  placeholder so "nobody set a real key" is a visible fact about a
+  deployment, not a silently-working default that looks secure.
 - **Dynamic cost threshold uses a flat, editable analyst-review-time proxy**
   (`FP_REVIEW_COST` in `backend/app/core/config.py`, default 250 currency
   units) — a disclosed modeling assumption, not independently cited, same
@@ -106,8 +115,20 @@ proactively than when a panel member finds them first.
   never-integration-tested subsystem. Claims now enter via `/score`
   (single JSON) and `/score/batch` (CSV upload) only — both fully tested
   against a live `TestClient`. See `docs/REBUILD_NOTES.md`.
-- **Minimal PII handling** — claim payloads are stored as-is in the
-  `claims.raw_payload` JSON column, no field-level encryption or masking.
+- **Minimal PII handling** — claim payloads are stored as-is (unencrypted)
+  in the `claims.raw_payload` JSON column; no field-level encryption
+  at rest. **Partially resolved (PB-11):** `insured_zip` (the one
+  quasi-identifier in this schema — no name/SSN/DOB field exists at all)
+  is now masked in every API response that echoes a claim's raw payload
+  back (`GET /claims`, `GET /claims/{id}` — `app/core/security.py`'s
+  `mask_pii()`), applied at the response boundary only; what's stored and
+  what scoring reads are both untouched. `GET /feedback/export`
+  deliberately does NOT mask it — that endpoint's whole purpose is
+  producing a file meant to be appended straight into the real training
+  data (though no feature currently reads `insured_zip` at all, see
+  PB-02) — but it's no longer reachable without the same API key as
+  everything else. Encryption-at-rest and masking for any future
+  PII-bearing field remain out of scope.
 
 ## Docker / this build's sandbox specifically
 

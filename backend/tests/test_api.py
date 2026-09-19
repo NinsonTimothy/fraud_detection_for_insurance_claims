@@ -19,15 +19,24 @@ SAMPLE_CLAIM = {
 }
 
 
+TEST_API_KEY = "test-suite-api-key"
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/test.db")
-    # Re-import fresh so the app picks up the patched DATABASE_URL.
+    # PB-11: every business endpoint now requires X-API-Key — set a known
+    # test key and send it on every request this fixture's client makes,
+    # so the rest of this file's tests keep exercising the ENDPOINT LOGIC
+    # they were written for rather than all failing on 401. Auth itself is
+    # covered separately in test_auth.py.
+    monkeypatch.setenv("AEGIS_API_KEY", TEST_API_KEY)
+    # Re-import fresh so the app picks up the patched DATABASE_URL/API key.
     for mod in list(sys.modules):
         if mod.startswith("app."):
             del sys.modules[mod]
     from app.main import app
-    with TestClient(app) as c:
+    with TestClient(app, headers={"X-API-Key": TEST_API_KEY}) as c:
         yield c
 
 
