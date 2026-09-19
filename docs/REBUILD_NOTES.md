@@ -465,3 +465,49 @@ to be deleted would be wasted work).
 
 Tests: 39/39 backend (31 existing + 8 new), 3/3 dashboard. No retrain
 needed — this ticket only touches the API request-validation layer.
+
+### 14. Expected client mistakes were 500s, not clean 4xxs (PB-07)
+
+Reproduced directly against a live `TestClient`, all four:
+
+  - POSTing the same `external_ref` twice to `/score` raised an unhandled
+    `sqlalchemy.exc.IntegrityError` (`UNIQUE constraint failed:
+    claims.external_ref`) -> bare 500.
+  - Submitting feedback twice for the same `claim_id` to `/feedback`
+    raised the same kind of unhandled `IntegrityError` (unique constraint
+    on `investigator_feedback.claim_id`) -> 500.
+  - Uploading a genuinely empty file to `/score/batch` raised
+    `pandas.errors.EmptyDataError: No columns to parse from file` -> 500.
+  - Uploading a header-only CSV (valid header, 0 data rows) got past
+    `pd.read_csv` but then raised sklearn's `ValueError: Found array with
+    0 sample(s) ... while a minimum of 1 is required by StandardScaler`
+    deep inside `_prepare()` -> 500.
+  - A fifth, related silent-failure case (not a 500, but the same class
+    of "expected mistake handled badly"): a non-numeric value in a
+    numeric CSV column (`age="thirty"`) was silently accepted and scored
+    — `feature_engineering.py`'s `pd.to_numeric(...,
+    errors="coerce").fillna(0.0)` turned it into `age=0.0` with no error
+    at all, the batch-CSV analogue of the bug PB-06 fixed for the
+    single-claim JSON endpoint.
+
+**Fix.** `api/scoring.py`'s `/score` now queries for an existing
+`external_ref` before inserting and returns a 409 with the conflicting
+`claim_id` if found, instead of relying on the database to reject it.
+`api/feedback.py`'s `/feedback` does the same pre-insert existence check
+for `claim_id`, returning 409. `/score/batch` now: catches
+`pd.errors.EmptyDataError`/`ParserError` from `pd.read_csv` and returns
+400; explicitly checks `len(df) == 0` after a successful parse (the
+header-only case, which parses fine but has no rows) and returns 400; and
+runs a new `_validate_numeric_columns()` check against
+`feature_engineering.NUMERIC_PASSTHROUGH_COLUMNS` before scoring, raising
+a 422 listing exactly which columns (and up to 10 example row indices)
+failed to parse as numbers, rather than silently corrupting them to 0.0.
+
+`backend/tests/test_client_error_handling.py` (new) locks in all five
+fixes: duplicate external_ref -> 409, duplicate feedback -> 409, empty
+CSV -> 400, header-only CSV -> 400, non-numeric CSV value -> 422 (with
+the offending columns named), and confirms a genuinely valid CSV still
+scores successfully end-to-end.
+
+Tests: 45/45 backend (39 existing + 6 new), 3/3 dashboard. No retrain
+needed — this ticket only touches API error handling.

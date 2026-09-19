@@ -1,4 +1,12 @@
-"""api/feedback.py — investigator feedback logger + retraining CSV export."""
+"""api/feedback.py — investigator feedback logger + retraining CSV export.
+
+PB-07 (fixed): InvestigatorFeedback.claim_id is unique=True (one feedback
+record per claim, by design), but a second submission for the same claim
+used to raise an unhandled sqlalchemy.exc.IntegrityError -> 500.
+Reproduced directly: submit feedback for a claim, submit again -> 500.
+Fixed with a pre-insert existence check, same pattern as scoring.py's
+duplicate-external_ref fix, returning a clean 409 instead.
+"""
 from __future__ import annotations
 
 import io
@@ -20,6 +28,11 @@ def submit_feedback(feedback_in: FeedbackIn, db: Session = Depends(get_db)):
     claim = db.query(Claim).filter(Claim.id == feedback_in.claim_id).first()
     if not claim:
         raise HTTPException(404, "claim not found")
+
+    existing = db.query(InvestigatorFeedback).filter(InvestigatorFeedback.claim_id == feedback_in.claim_id).first()
+    if existing is not None:
+        raise HTTPException(409, f"feedback was already submitted for claim_id={feedback_in.claim_id} (by {existing.investigator_name!r})")
+
     fb = InvestigatorFeedback(
         claim_id=feedback_in.claim_id, investigator_name=feedback_in.investigator_name,
         confirmed_fraud=feedback_in.confirmed_fraud, notes=feedback_in.notes,
