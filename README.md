@@ -111,7 +111,9 @@ aegis-risk-engine/
 │   ├── ml_feature_critique.md                     # original critique (verbatim) this rebuild implements
 │   ├── generalization_and_cv_results.md            # original external-validation writeup (verbatim)
 │   ├── REBUILD_NOTES.md                             # what changed here vs. the original, and why
-│   └── LIMITATIONS.md                                # every known, disclosed limitation
+│   ├── LIMITATIONS.md                                # every known, disclosed limitation
+│   └── CURRENT_METRICS.md                             # auto-generated (PB-15) — never hand-edit;
+│                                                         regenerate with `python -m app.ml.generate_metrics_report`
 ├── deployment/                                        # Dockerfiles, entrypoint-train.sh
 ├── docker-compose.yml
 └── README.md                                            # this file
@@ -133,8 +135,10 @@ through "whichever number is highest."
 
 1. **Internal performance is honest, not leaked.** Every reported number
    (holdout and 5-fold CV, full-pipeline-refit-per-fold) is generated from
-   `models/metrics.json` — see that file for current figures, never a
-   hand-typed number here. Three real leaks were found and fixed during
+   `models/metrics.json` — run `python -m app.ml.generate_metrics_report`
+   (PB-15) from `backend/`, or read its output at `docs/CURRENT_METRICS.md`,
+   for current figures; never a hand-typed number here. Three real leaks
+   were found and fixed during
    this rebuild (ZIP-prefix target-encoding leakage, a missing-data parsing
    bug, and threshold/SHAP selection on the test set — `REBUILD_NOTES.md`
    §§6-8) and the current numbers are the honest result of fixing all

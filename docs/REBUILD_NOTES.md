@@ -70,8 +70,18 @@ after the fact.
 **Historical record — pre-PB-02.** The table below was captured against the
 model as it stood before the `zip3_risk_tier` 4-digit-prefix bug (§6 below)
 was found and fixed. It is kept for the record of what the leak looked
-like; it is not this build's current numbers. Current numbers live in
-`models/metrics.json` and the README/CHANGELOG.
+like; it is not this build's current numbers, and the model has been
+retrained several more times since this table was captured (PB-14's
+champion comparison, PB-24's `incident_education_level` encoding fix,
+among others), so even the "This rebuild" column below is itself now a
+historical snapshot, not live. **Current numbers, always regenerated from
+`models/metrics.json` and the Oracle validation report (never hand-typed):
+run `python -m app.ml.generate_metrics_report` (PB-15) or read
+`docs/CURRENT_METRICS.md`, its output.** (A concrete instance of exactly
+the drift this rule exists to prevent was found while building PB-15: this
+table's own "Oracle ROC-AUC ~0.48 (random)" row, below, no longer matches
+the current model — see `docs/CURRENT_METRICS.md`'s bootstrap CI, which no
+longer contains 0.5 at all.)
 
 | Metric (Random Forest) | Original prototype | This rebuild | Why different |
 |---|---|---|---|
@@ -1528,3 +1538,70 @@ production code changed — this ticket is pure test-coverage addition, so
 every new test asserts against the CURRENT already-fixed behavior (all
 passed on the first run against the existing codebase; none of them
 uncovered a new bug to fix).
+
+### 27. Auto-generated metrics doc, Oracle statistical caveat, geographic-transferability disclosure (PB-15 + SH-05 + PB-23)
+
+**PB-15.** This project's own working rules require every number in
+`docs/` to come from `models/metrics.json`, never be hand-typed — in
+practice, before this ticket, that meant manually re-reading
+`metrics.json` before writing each number into prose, with no automated
+check that a given piece of prose hadn't drifted from the artifacts it
+was supposedly sourced from. Building this ticket found a concrete,
+reproduced instance of exactly that drift: §3's historical comparison
+table (above) states "Oracle ROC-AUC ~0.48 (random)" — accurate against
+the training run it was captured from, but the model has since been
+retrained several more times by later tickets (PB-14's champion
+comparison, PB-24's encoding fix, among others), and the CURRENT
+`models/metrics.json`-backed Oracle bootstrap 95% CI is `[0.443, 0.481]`
+— a range that no longer contains 0.5 at all, so "random" is no longer
+the most accurate one-word characterization (it's now measurably *below*
+chance, not merely indistinguishable from it). §3's table has been
+annotated to flag itself as a fixed historical snapshot rather than
+fixed further, since rewriting old before/after numbers to match today's
+model would destroy the historical record of what each ticket actually
+changed at the time — instead, `backend/app/ml/generate_metrics_report.py`
+(new) is now the canonical, re-runnable source of truth: reads
+`models/metrics.json`, `data/processed/cross_validation_results.csv`,
+`data/processed/champion_decision.json`, and
+`data/external/oracle/oracle_validation_report.json` directly, and writes
+`docs/CURRENT_METRICS.md` (also printed to stdout). README.md's "Key
+findings" §1 and LIMITATIONS.md's Oracle bullet now point readers at this
+script/file instead of asking them to trust a number typed into either
+document. `backend/tests/test_generate_metrics_report.py` (5 tests) locks
+in that the generated model-comparison table is byte-traceable back to
+`metrics.json`, that it writes to `docs/CURRENT_METRICS.md` for real, and
+— the specific regression this ticket exists to prevent — that it
+correctly reports whether the Oracle ROC-AUC bootstrap CI contains 0.5 or
+not, rather than defaulting to a stale "random" label.
+
+**SH-05.** A statistical caveat on the Oracle comparison, disclosed in
+both `docs/LIMITATIONS.md` and the generated report itself: Oracle's
+15,420 rows give the ROC-AUC comparison real statistical power (the CI
+above is tight enough to say with confidence whether it contains 0.5),
+but PR-AUC's own baseline shifts with class prevalence — this project's
+internal fraud rate (~24.7%) is far higher than Oracle's (~6.0%), so part
+of the internal-vs-Oracle PR-AUC gap reflects that prevalence difference
+alone, not model degradation. The ROC-AUC comparison and the SHAP
+constant-feature-share analysis (both prevalence-independent) remain the
+primary, quantified evidence for the generalization failure; the PR-AUC
+gap is directionally consistent with that finding but isn't, by itself,
+an independently prevalence-controlled confirmation of it.
+
+**PB-23.** A limitation not previously stated anywhere in this repo's
+docs, added now: both training datasets (the primary 1,000-row set and
+Oracle) are US auto-insurance claims — US dollar amounts, US state codes,
+US-specific categorical fields. This project is produced in a University
+of Ghana academic context, but unlike the sibling MoMo Guard project
+(explicitly grounded in Ghanaian mobile-money data and Bank of Ghana
+statistics), no Ghanaian claims data, currency, or regulatory framework
+was used, mapped, or validated against anywhere in this pipeline. Stated
+explicitly in `docs/LIMITATIONS.md` now, so nothing in this repo's
+methodology or reported numbers is mistakenly read as evidence of
+transferability to the Ghanaian insurance market — that would need its
+own dataset and its own external-validation exercise, the same way the
+Oracle adapter answers the (still US-only) generalization question this
+project actually does answer.
+
+Tests: 137/137 backend (132 existing + 5 `test_generate_metrics_report.py`),
+11/11 dashboard (unaffected). No retrain, no scoring-path code changed —
+this ticket adds a docs-generation script plus documentation-only edits.

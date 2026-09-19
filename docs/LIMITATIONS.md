@@ -63,7 +63,40 @@ proactively than when a panel member finds them first.
   near-row-unique leakage bug, not kept as disclosed leakage, so it's no
   longer a contributing factor. Exact ROC-AUC/SHAP-share figures are
   regenerated from `models/metrics.json` and the Oracle validation report
-  (see the Monitoring page), not hand-typed here.
+  (see the Monitoring page), not hand-typed here — run
+  `python -m app.ml.generate_metrics_report` (PB-15) from `backend/`, or
+  read its output at `docs/CURRENT_METRICS.md`, for the current numbers
+  rather than trusting any figure typed directly into this file.
+- **Statistical caveat on the Oracle comparison (SH-05).** Oracle's 15,420
+  rows give the ROC-AUC comparison itself high statistical power — the
+  bootstrap 95% CI on Oracle ROC-AUC (`docs/CURRENT_METRICS.md`) is tight
+  enough to say with confidence whether it contains 0.5 or not, which is
+  the headline claim ("does not generalize"). But **PR-AUC is not
+  comparable across the two datasets the same way** — average precision's
+  own baseline shifts with class prevalence, and this project's internal
+  fraud rate (~24.7%) is far higher than Oracle's (~6.0%), so part of any
+  internal-vs-Oracle PR-AUC gap reflects that prevalence difference, not
+  model degradation alone. Read the ROC-AUC comparison and the SHAP
+  constant-feature-share analysis (both prevalence-independent) as the
+  primary evidence for the generalization failure; treat the PR-AUC gap
+  as directionally consistent with, but not an independently quantified
+  confirmation of, that same finding.
+- **Geographic / regulatory transferability (PB-23).** Both training
+  datasets (the primary 1,000-row set and the Oracle external-validation
+  set) are US auto-insurance claims — US dollar amounts, US state codes
+  (`policy_state`/`incident_state`, e.g. OH/IN/IL), and US-specific
+  categorical fields (`police_report_available`, `authorities_contacted`
+  in terms recognizable to a US claims process). This project is produced
+  in a University of Ghana academic context, but no Ghanaian claims data,
+  currency, or regulatory framework was used, mapped, or validated against
+  anywhere in this pipeline — unlike the sibling MoMo Guard project, which
+  is explicitly grounded in Ghanaian mobile-money data and Bank of Ghana
+  statistics. Nothing in this repo's methodology, feature set, or reported
+  numbers should be read as evidence that the model — or even the general
+  approach — transfers to the Ghanaian insurance market; that would need
+  its own dataset and its own external-validation exercise, exactly like
+  the Oracle adapter provides for the (still US-only) generalization
+  question this project does answer.
 - **No prior-claims-history / fault-attribution / network-link features** —
   the primary dataset has no policyholder ID linking multiple claims, so
   "how many claims has this person filed before" (the single most-cited
