@@ -7,8 +7,9 @@ supervised by Prof. Ebenezer Owusu).
 
 Random Forest (SMOTE-balanced) is the shipped fraud classifier, trained on a
 real, human-labeled 1,000-row auto-insurance-claims dataset, with SHAP
-explainability, a cost-optimal decision threshold, a FastAPI backend (three
-ingestion paths: single-claim API, batch CSV, simulated Kafka stream), a
+explainability, a cost-optimal decision threshold, a FastAPI backend (two
+ingestion paths: single-claim API, batch CSV — a third, simulated Kafka
+stream, was removed entirely, see PB-08/PB-09 in `docs/REBUILD_NOTES.md`), a
 Postgres-backed feature/audit store (SQLite fallback), and a Streamlit
 analyst dashboard. It is honestly, disclosedly validated against a second
 real dataset (Oracle, 15,420 rows) it never trained on — and that
@@ -48,13 +49,15 @@ The dashboard calls the same `FraudScoringService` the API uses, in-process
 docker compose up --build
 ```
 
-Brings up Postgres, Kafka (KRaft mode, no Zookeeper), a one-shot
-`train-init` container (cleans data + trains models + runs Oracle
-validation if `models/` is empty), the API (`:8000`), and the dashboard
-(`:8501`). **Not independently verified end-to-end** in the sandbox this
-was built in — Docker Hub was network-blocked there, so no base image
-could be pulled, though `docker compose config` validates the full compose
-file. See `docs/LIMITATIONS.md` for the precise disclosure. Budget time to
+Brings up Postgres, a one-shot `train-init` container (cleans data +
+trains models + runs Oracle validation if `models/` is empty), the API
+(`:8000`), and the dashboard (`:8501`). (An earlier version also brought up
+a Kafka broker for a simulated claim-stream ingestion path — removed
+entirely, not just left unwired, see PB-08/PB-09 in `docs/REBUILD_NOTES.md`.)
+**Not independently verified end-to-end** in the sandbox this was built
+in — Docker Hub was network-blocked there, so no base image could be
+pulled, though `docker compose config` validates the full compose file.
+See `docs/LIMITATIONS.md` for the precise disclosure. Budget time to
 debug on first real run, the way any un-execute-tested deployment config
 deserves.
 
@@ -66,14 +69,16 @@ aegis-risk-engine/
 │   ├── app/
 │   │   ├── ml/            # clean_data, feature_engineering, train, explainer,
 │   │   │                     cost_threshold, psi, inference, oracle_adapter,
-│   │   │                     evaluate_oracle
-│   │   ├── api/            # scoring, claims, feedback, audit, monitoring, ingestion
+│   │   │                     evaluate_oracle, uncertainty, risk_policy
+│   │   ├── api/            # scoring, claims, feedback, audit, monitoring
+│   │   │                     (PB-08/PB-09: a Kafka-based ingestion module was
+│   │   │                     removed entirely — see docs/REBUILD_NOTES.md)
 │   │   ├── db/              # SQLAlchemy models + session (Postgres/SQLite)
-│   │   ├── kafka/            # producer_sim.py — logic verified directly, see LIMITATIONS
 │   │   ├── core/              # config
 │   │   └── main.py             # FastAPI app
-│   ├── tests/                   # 16 tests: ML core (incl. the single-row-scoring
-│   │                              regression test), API, Kafka logic
+│   ├── tests/                   # ML core (incl. the single-row-scoring
+│   │                              regression test), API, PSI, explainer,
+│   │                              proxy-feature gating, uncertainty
 │   └── requirements.txt
 ├── dashboard/
 │   ├── streamlit_app.py           # nav shell

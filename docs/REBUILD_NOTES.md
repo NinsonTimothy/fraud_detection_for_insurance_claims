@@ -860,3 +860,57 @@ Tests: 76/76 backend (68 existing + 8 new), 5/5 dashboard (3 existing + 2
 new). Retrained + re-ran `evaluate_oracle.py` to regenerate the new
 artifacts; no feature/model changes, so the point estimates are unchanged
 from §17 — only the new CI columns/keys are new.
+
+### 19. Kafka removed entirely, not left unwired (PB-08/PB-09, D1)
+
+The working brief's D1 decision default: remove Kafka entirely rather
+than keep a "logic verified directly, live-broker wiring unverified"
+disclosure. The reasoning holds up on inspection — no live Kafka broker
+was ever reachable in any sandbox this project was assembled in (Docker
+Hub network-blocked), so the `confluent_kafka.Producer`/`Consumer` client
+wiring in `app/kafka/producer_sim.py`'s own docstring was never actually
+exercised against anything, ever, in this project's history. Keeping an
+entire subsystem in a delivered project that has literally never run
+end-to-end understates its own risk more than the previous disclosure
+language admitted.
+
+**Removed entirely** (not stubbed, not disabled behind a flag):
+- `backend/app/kafka/` (`producer_sim.py`, `__init__.py`) — the
+  `InMemoryKafkaStub`/`validate_claim_message`/`produce_claim`/
+  `consume_and_process` logic.
+- `backend/app/api/ingestion.py` — the entire file was the two Kafka
+  endpoints (`POST /ingest/kafka/produce`, `POST /ingest/kafka/consume`);
+  nothing non-Kafka was in it. `main.py`'s router registration for it
+  removed too.
+- `backend/tests/test_kafka_logic.py` (the in-memory-stub unit tests) and
+  `test_api.py::test_kafka_ingest_flow` (the end-to-end route test).
+- `KAFKA_BOOTSTRAP_SERVERS`/`CLAIMS_TOPIC` from `app/core/config.py`.
+- `confluent-kafka` from `backend/requirements.txt`.
+- The `kafka` service and the `api` service's `KAFKA_BOOTSTRAP_SERVERS`
+  env var from `docker-compose.yml` (`docker compose config` re-validated
+  clean after the edit — Postgres and the app's own two images are now
+  the only services).
+
+**What's unchanged.** Claims still enter via `/score` (single JSON) and
+`/score/batch` (CSV upload) — `api/scoring.py`, fully tested against a
+live `TestClient`, untouched by this ticket. `Claim.ingested_via`'s
+column stays (only its allowed-values comment dropped `kafka`) — a
+pre-existing DB with historical `"kafka"` rows is not migrated or
+rewritten, this is a code change, not a data migration.
+
+**Locked in, not just removed.** `test_api.py` gained
+`test_kafka_ingestion_routes_are_gone`, asserting both former Kafka
+routes now 404 — a removal is only actually verified once something
+checks it stayed removed, the same standard this project holds every
+other fix to.
+
+`README.md`/`docs/LIMITATIONS.md` updated from "three ingestion paths" /
+"Kafka consumer is at-least-once" to reflect the removal (LIMITATIONS.md
+strikes the old bullet through and marks it resolved, per this file's own
+established convention, rather than deleting the historical record).
+
+Tests: 71/71 backend (5 fewer than before this ticket — `test_kafka_logic.py`'s
+5 tests removed, `test_api.py`'s 1 Kafka test replaced with 1
+route-is-gone test — net -5, not a regression), 5/5 dashboard (dashboard
+never referenced Kafka, unaffected). No retrain needed — this ticket only
+removes an unused ingestion path, no ML code touched.

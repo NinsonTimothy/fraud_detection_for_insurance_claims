@@ -89,14 +89,16 @@ def test_risk_grid_summary(client):
     assert body["total_scored"] >= 1
 
 
-def test_kafka_ingest_flow(client):
-    r = client.post("/ingest/kafka/produce", json=SAMPLE_CLAIM)
-    assert r.status_code == 200
-    r = client.post("/ingest/kafka/consume")
-    assert r.status_code == 200
-    assert r.json()["n_processed"] >= 1
-
-
 def test_score_rejects_missing_body(client):
     r = client.post("/score", json={})
     assert r.status_code == 422
+
+
+def test_kafka_ingestion_routes_are_gone(client):
+    """PB-08/PB-09 (D1): the Kafka ingestion path was removed entirely,
+    not just left unwired — these routes must not exist at all (404), not
+    just fail for some other reason."""
+    r = client.post("/ingest/kafka/produce", json=SAMPLE_CLAIM)
+    assert r.status_code == 404
+    r = client.post("/ingest/kafka/consume")
+    assert r.status_code == 404

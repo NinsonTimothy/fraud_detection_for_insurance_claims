@@ -22,7 +22,12 @@ class Claim(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     external_ref = Column(String(64), unique=True, index=True, nullable=True)
     raw_payload = Column(JSON, nullable=False)
-    ingested_via = Column(String(32), nullable=False, default="api")  # api | batch_csv | kafka
+    # PB-08/PB-09 (D1): "kafka" removed from the valid-values comment — the
+    # Kafka ingestion path is gone entirely, not just unused. The column
+    # itself (and any historical "kafka" rows a pre-existing DB might
+    # still have) is left alone; this is a comment/behavior change, not a
+    # migration.
+    ingested_via = Column(String(32), nullable=False, default="api")  # api | batch_csv
     received_at = Column(DateTime(timezone=True), default=utcnow, index=True)
 
     score = relationship("ScoredClaim", back_populates="claim", uselist=False)

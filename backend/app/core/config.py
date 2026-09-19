@@ -14,9 +14,6 @@ DATA_DIR = PROJECT_ROOT / "data"
 # to know which one is live.
 DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{PROJECT_ROOT / 'aegis.db'}")
 
-KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-CLAIMS_TOPIC = os.environ.get("CLAIMS_TOPIC", "aegis.claims.raw")
-
 ANALYST_REVIEW_COST = float(os.environ.get("FP_REVIEW_COST", "250.0"))
 
 # SH-02 / D3: `is_highrisk_hobby` and `is_exec_occupation` (feature_engineering.py's

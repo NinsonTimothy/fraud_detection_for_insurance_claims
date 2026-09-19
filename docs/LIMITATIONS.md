@@ -97,9 +97,15 @@ proactively than when a panel member finds them first.
   upgrade path. Acceptable for a thesis-scale single-environment SQLite
   deployment; a real multi-environment deployment would need Alembic (or
   equivalent) migrations instead.
-- **Kafka consumer is at-least-once, not exactly-once** — a handler failure
-  part-way through a consumed batch leaves already-processed messages ahead
-  of it processed; the batch is not retried from the start.
+- ~~Kafka consumer is at-least-once, not exactly-once~~ — **resolved
+  (PB-08/PB-09, D1):** the entire simulated-Kafka-stream ingestion path
+  (`app/api/ingestion.py`, `app/kafka/`) has been removed, not fixed —
+  no live broker was ever reachable in this build's sandbox to verify the
+  producer/consumer wiring against, so "logic verified directly, wiring
+  unverified" understated the risk of shipping an entire
+  never-integration-tested subsystem. Claims now enter via `/score`
+  (single JSON) and `/score/batch` (CSV upload) only — both fully tested
+  against a live `TestClient`. See `docs/REBUILD_NOTES.md`.
 - **Minimal PII handling** — claim payloads are stored as-is in the
   `claims.raw_payload` JSON column, no field-level encryption or masking.
 
@@ -107,8 +113,9 @@ proactively than when a panel member finds them first.
 
 `dockerd` **can** start and run in the sandbox this project was assembled
 in — but Docker Hub (`registry-1.docker.io`) is network-blocked by that
-sandbox's egress policy, so no base image (Python, Postgres, Kafka — all of
-them) can actually be pulled or built there. `docker compose -f
+sandbox's egress policy, so no base image (Python, Postgres — the compose
+file's only two pulled images since PB-08/PB-09 removed the Kafka
+service) can actually be pulled or built there. `docker compose -f
 docker-compose.yml config` DOES validate the compose file's full syntax and
 service graph successfully (verified during this build). On a machine with
 normal Docker Hub access, `docker compose up --build` should work

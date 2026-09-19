@@ -1,3 +1,8 @@
+# PB-08/PB-09 (D1): the `kafka` service (and the `api` service's
+# KAFKA_BOOTSTRAP_SERVERS env var) has been removed entirely — the Kafka
+# ingestion path itself is gone from the codebase (see
+# docs/REBUILD_NOTES.md). Claims enter via the `api` service's /score and
+# /score/batch endpoints.
 services:
   postgres:
     image: postgres:16-alpine
@@ -14,21 +19,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-
-  kafka:
-    image: apache/kafka:3.8.0
-    ports:
-      - "9092:9092"
-    environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      CLUSTER_ID: aegis-single-node-cluster
 
   train-init:
     build:
@@ -56,7 +46,6 @@ services:
       - processed-data:/srv/data/processed
     environment:
       DATABASE_URL: postgresql://aegis:aegis@postgres/aegis
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     depends_on:
       postgres:
         condition: service_healthy
