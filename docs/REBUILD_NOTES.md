@@ -1447,3 +1447,84 @@ dashboard code touched). No retrain needed — both fallback constants
 were computed from the same training data the shipped model was already
 fit against; this fixes a scoring-time bug in how a bad/missing input is
 handled, not the model itself.
+
+### 26. Negative-path and regression test coverage gaps (PB-16)
+
+Four genuinely untested areas, found by auditing which modules had zero
+corresponding test file (not by guessing — `grep`ing every `app/ml/*.py`
+and `app/api/*.py` module name against `tests/`'s existing imports):
+
+**`oracle_adapter.py` — this project's sole external-validation
+mechanism — had no test file at all.** Its own module docstring makes
+specific, checkable claims (exactly 9 of 35 raw fields mapped for real,
+by name; every unmapped field left genuinely absent, never invented).
+New `tests/test_oracle_adapter.py` (8 tests) checks those claims
+directly against the real `data/external/oracle/fraud_oracle.csv`
+already in the repo: the mapped-column set matches the documented list
+exactly; unmapped fields are genuinely absent (not silently defaulted
+inside the adapter itself); `WitnessPresent`'s lossy Yes/No→1/0 mapping
+round-trips correctly against the raw source column; `insured_sex`/
+`police_report_available` are uppercased to match this project's own
+schema vocabulary (a case mismatch here would silently fail every
+downstream exact-string categorical check); Oracle's own 0-value
+missing-age sentinel (320 of 15,420 rows) is replaced, not passed
+through as a literal age of 0; every mapped-and-defaulted row flows
+through `engineer_features()` with zero NaNs; and `incident_severity`-
+derived features are provably constant across every Oracle row (the
+mechanism behind the 93.2%-of-SHAP-weight-constant-on-Oracle finding in
+`docs/insurance_fyp_project_handoff.md`, not just its downstream
+ROC-AUC symptom).
+
+**`train.py` — every CV/threshold number in `docs/REBUILD_NOTES.md` and
+`models/metrics.json` ultimately comes from this file's functions, none
+of which had a test.** New `tests/test_train_pipeline.py` (6 tests, all
+against the real cleaned dataset, using a fast `LogisticRegression` in
+place of the shipped RF+SMOTE pipeline where only the CV/OOF *machinery*
+is under test, not the shipped model's own reported numbers — those stay
+sourced from an actual training run per this project's own working
+rules): `load_and_split()` is deterministic and stays stratified across
+repeated calls; `build_features()` aligns test columns onto train
+columns with zero NaNs; `_f1_optimal_threshold()` recovers the correct
+threshold on a synthetic perfectly-separable grid; `_out_of_fold_proba()`
+returns one real (non-degenerate) probability per row; and
+`cross_validate_model()` returns valid-range mean/std for every metric
+across 5 folds.
+
+**The train/serve parity test this ticket specifically asked for.**
+`inference.py`'s `FraudScoringService._prepare()` and `train.py`'s
+`build_features()` independently call the same shared
+`engineer_features()`/`align_to_training_columns()` functions — nothing
+architecturally *forces* them to agree, they just currently do. The new
+`test_train_serve_parity_scoring_matches_shipped_artifacts` test takes
+three real rows from `train.py`'s own held-out test split, scores each
+one through `FraudScoringService.score_one()` (the exact path `/score`
+and the dashboard both call), and independently re-derives the same
+rows' scores by calling `build_features()` directly against the SAME
+shipped `random_forest_final.pkl`/`standard_scaler.pkl` artifacts.
+Verified passing with exact (`abs=1e-9`) agreement on all three rows —
+this is the one test in the suite that would catch inference.py's
+serving pipeline silently drifting from train.py's training pipeline (a
+reordered column, a stale `feature_columns.json`, a scaler swapped for a
+differently-fit one) before it ever reached a live-scored claim.
+
+**Negative-path API gaps.** `GET /claims/{id}` for a never-scored id and
+`POST /feedback` against a never-scored `claim_id` both already returned
+a clean 404 in the existing code (`claims.py`/`feedback.py`) but had no
+test locking that in — `test_client_error_handling.py` gains both.
+`api/monitoring.py` had zero behavioral coverage at all (only an auth
+401 check in `test_auth.py`) — new `tests/test_monitoring.py` (3 tests)
+covers `/monitoring/kpis`'s happy path and, more importantly,
+`/monitoring/drift`'s documented edge case: below its hardcoded 30-row
+minimum live volume, it must return `insufficient_live_volume` rather
+than feeding a tiny, statistically meaningless sample into `psi_report()`
+and returning a misleadingly precise number — verified both below (1
+live row) and at/above (30 rows) that threshold.
+
+Tests: 132/132 backend (113 existing + 8 `test_oracle_adapter.py` + 6
+`test_train_pipeline.py` + 2 negative-path additions to
+`test_client_error_handling.py` + 3 `test_monitoring.py`; net +19), 11/11
+dashboard (unaffected — no dashboard code touched). No retrain, no
+production code changed — this ticket is pure test-coverage addition, so
+every new test asserts against the CURRENT already-fixed behavior (all
+passed on the first run against the existing codebase; none of them
+uncovered a new bug to fix).

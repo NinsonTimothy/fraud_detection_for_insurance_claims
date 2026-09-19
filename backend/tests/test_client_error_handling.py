@@ -52,6 +52,23 @@ def test_duplicate_external_ref_is_409_not_500(client):
     assert "ext-dup" in r2.text
 
 
+def test_get_nonexistent_claim_is_404(client):
+    """PB-16: GET /claims/{id} for an id that was never scored must return
+    a clean 404, not a 500 from an unguarded None.score/None.raw_payload
+    access downstream."""
+    r = client.get("/claims/999999")
+    assert r.status_code == 404
+
+
+def test_feedback_for_nonexistent_claim_is_404_not_409_or_500(client):
+    """PB-16: submitting feedback against a claim_id that was never scored
+    must 404 (the claim itself doesn't exist) — distinct from the
+    already-covered 409 case (the claim exists but already has
+    feedback)."""
+    r = client.post("/feedback", json={"claim_id": 999999, "investigator_name": "Alice", "confirmed_fraud": True})
+    assert r.status_code == 404
+
+
 def test_duplicate_feedback_is_409_not_500(client):
     r = client.post("/score", json={"payload": VALID_CLAIM})
     claim_id = r.json()["claim_id"]
