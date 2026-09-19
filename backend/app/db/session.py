@@ -14,6 +14,12 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def init_db():
+    # Prototype-only schema management (PB-22): create_all() creates any
+    # missing table but never ALTERs an existing one, so a model field
+    # added/renamed/removed after first run needs a manual DB reset (or a
+    # migration tool such as Alembic) — there is no migration history here.
+    # Fine for a thesis-scale SQLite/single-environment deployment; not a
+    # substitute for real migrations in a long-lived, multi-environment one.
     Base.metadata.create_all(bind=engine)
 
 

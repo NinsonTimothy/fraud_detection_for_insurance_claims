@@ -54,6 +54,12 @@ proactively than when a panel member finds them first.
 - **Retraining loop is manual**, not automatic: export the investigator
   feedback CSV (`GET /feedback/export`), append confirmed labels to the
   training set, re-run `python -m app.ml.train`.
+- **No database migrations.** `db/session.py::init_db()` calls SQLAlchemy's
+  `create_all()`, which creates missing tables but never alters an existing
+  one — a schema change after first run needs a manual DB reset, not an
+  upgrade path. Acceptable for a thesis-scale single-environment SQLite
+  deployment; a real multi-environment deployment would need Alembic (or
+  equivalent) migrations instead.
 - **Kafka consumer is at-least-once, not exactly-once** — a handler failure
   part-way through a consumed batch leaves already-processed messages ahead
   of it processed; the batch is not retried from the start.
