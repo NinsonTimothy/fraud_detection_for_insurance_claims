@@ -40,6 +40,7 @@ from app.core.config import INCLUDE_PROXY_FEATURES
 from app.ml.cost_threshold import find_cost_optimal_threshold
 from app.ml.explainer import ClaimExplainer
 from app.ml.feature_engineering import engineer_features
+from app.ml.uncertainty import bootstrap_metric_ci
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DATA_CLEANED = PROJECT_ROOT / "data" / "cleaned" / "insurance_claims_cleaned.csv"
@@ -303,6 +304,29 @@ def main():
     model_comparison = pd.DataFrame(comparison_rows)
     model_comparison.to_csv(PROCESSED_DIR / "model_comparison.csv", index=False)
 
+    # ---- SH-04: bootstrap 95% CI for every point-estimate metric in
+    # model_comparison.csv above — a single fixed 200-row holdout split has
+    # real sampling noise around it that a bare point estimate hides. This
+    # is complementary to cv_df's across-FOLD mean+-SD below (a different
+    # question: "how much would this move on a different SAMPLE of the
+    # same test rows" vs. "how much would this move on a different SPLIT
+    # of the training data"), not a replacement for it. See
+    # uncertainty.py's module docstring. ----
+    bootstrap_rows = []
+    for name, m in models.items():
+        threshold = operating_threshold if name == "random_forest" else 0.5
+        proba = m.predict_proba(X_test_scaled)[:, 1]
+        ci = bootstrap_metric_ci(y_test.values, proba, threshold=threshold, n_boot=1000, random_state=RANDOM_STATE)
+        point_estimates = next(r for r in comparison_rows if r["model"] == name)
+        for metric, interval in ci.items():
+            bootstrap_rows.append({
+                "model": name, "metric": metric, "point_estimate": point_estimates[metric],
+                "ci_lower": interval["ci_lower"], "ci_upper": interval["ci_upper"],
+                "n_boot_effective": interval["n_boot_effective"],
+            })
+    bootstrap_ci_df = pd.DataFrame(bootstrap_rows)
+    bootstrap_ci_df.to_csv(PROCESSED_DIR / "holdout_bootstrap_ci.csv", index=False)
+
     full_df = pd.concat([train_df, test_df], ignore_index=True)
     y_full = pd.concat([y_train, y_test], ignore_index=True)
     cv_rows = [cross_validate_model(name, factory, full_df, y_full) for name, factory in estimator_factories.items()]
@@ -365,6 +389,14 @@ def main():
             "included_in_shipped_model": INCLUDE_PROXY_FEATURES,
             "risky_feature_columns": ["is_highrisk_hobby", "is_exec_occupation"],
             "ablation_report": "data/processed/proxy_feature_ablation.csv",
+        },
+        # SH-04: where to find uncertainty for every reported number —
+        # cross-fold mean+-SD (cross_validation_results.csv, already
+        # produced above) and bootstrap 95% CI on the fixed holdout split
+        # (new this ticket).
+        "uncertainty": {
+            "cross_validation_mean_std": "data/processed/cross_validation_results.csv",
+            "holdout_bootstrap_95ci": "data/processed/holdout_bootstrap_ci.csv",
         },
     }
     with open(MODELS_DIR / "metrics.json", "w") as f:

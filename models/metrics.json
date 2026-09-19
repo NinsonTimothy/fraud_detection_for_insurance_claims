@@ -68,5 +68,9 @@
       "is_exec_occupation"
     ],
     "ablation_report": "data/processed/proxy_feature_ablation.csv"
+  },
+  "uncertainty": {
+    "cross_validation_mean_std": "data/processed/cross_validation_results.csv",
+    "holdout_bootstrap_95ci": "data/processed/holdout_bootstrap_ci.csv"
   }
 }

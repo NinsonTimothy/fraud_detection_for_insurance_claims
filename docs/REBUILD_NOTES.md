@@ -791,3 +791,72 @@ with both variants and sane (0-1, finite) metrics for each.
 Tests: 68/68 backend (60 existing + 8 new), 3/3 dashboard. Retrained —
 this IS a required retrain (the shipped feature set changed from 72 to 70
 columns); see the before/after table above for the full metric impact.
+
+### 18. Report uncertainty everywhere a number is reported — CV mean±SD already existed, bootstrap 95% CI did not (SH-04)
+
+Every headline metric this project reports (`model_comparison.csv`'s
+holdout recall/ROC-AUC/etc., `oracle_validation_report.json`'s Oracle
+numbers, the Overview page's KPI cards) was a bare point estimate off ONE
+fixed split, with no sense of how much sampling noise sits under it.
+`cross_validate_model()`'s `*_mean`/`*_std` already answered a
+complementary question (how much a number moves across different
+TRAINING splits) but nothing answered "how much would THIS split's number
+move on a different SAMPLE of the same rows."
+
+**Fix.** New `backend/app/ml/uncertainty.py`: `bootstrap_metric_ci()`
+resamples `(y_true, y_proba)` row pairs with replacement (1,000
+iterations), recomputes ROC-AUC/PR-AUC always and recall/precision/F1/
+accuracy when a threshold is given, and returns the empirical 95%
+percentile interval per metric — standard, model-agnostic, and doesn't
+require retraining anything (it only needs already-computed predicted
+probabilities). A resample containing only one class can't score ROC-AUC/
+PR-AUC (undefined); those resamples are skipped for those two metrics
+only, and `n_boot_effective` discloses how many resamples actually
+contributed so a reader can judge how much a given interval should be
+trusted (matters most for Oracle's ~6% fraud rate).
+
+Wired into both places a holdout point estimate gets reported:
+- `train.py`: after `model_comparison.csv` is written, bootstrap CI is
+  computed for all three models (RF/LR/XGB) at their respective
+  comparison threshold and saved to
+  `data/processed/holdout_bootstrap_ci.csv` (long format: model, metric,
+  point_estimate, ci_lower, ci_upper, n_boot_effective).
+  `metrics.json` gets a new `uncertainty` block pointing at both the CV
+  file and this new one.
+- `evaluate_oracle.py`: `oracle_validation_report.json` gets a new
+  `oracle_metrics_ci` key, keyed the same as `oracle_metrics`. At the
+  current operating threshold the shipped model flags nothing on Oracle
+  (recall/precision/F1 all exactly 0 in every one of 1,000 resamples —
+  `ci_lower`/`ci_upper` both `0.0`), which is itself informative: the
+  collapse isn't a borderline case with a wide interval, it's a flat
+  floor.
+
+**Dashboard.** Overview page: each KPI card's caption now shows the
+bootstrap 95% CI alongside its point estimate (e.g. "95% CI [0.709,
+0.870]"), a new caption line surfaces the RF row's CV mean±SD explicitly
+labeled as a different question ("moves across training splits" vs.
+"moves across samples of this one test set"), the Oracle warning banner
+shows Oracle's own ROC-AUC CI, and the model-comparison table gains
+`recall_95ci`/`pr_auc_95ci`/`roc_auc_95ci` columns. Model insights page's
+existing CV tab gets a caption explicitly distinguishing the two kinds of
+uncertainty so neither is mistaken for "the same interval, computed
+twice." `components/data_access.py` gets `load_bootstrap_ci()` +
+`bootstrap_ci_for()`.
+
+`backend/tests/test_uncertainty.py` (new): bootstrap CI brackets the real
+point estimate for ROC-AUC/PR-AUC on a synthetic classifier; threshold
+`None` returns only AUC-family metrics, a given threshold adds the
+classification metrics too; determinism given a fixed `random_state`;
+empty input returns `{}` without crashing; an all-one-class degenerate
+sample correctly omits ROC-AUC/PR-AUC (undefined on every resample) while
+still reporting accuracy; `holdout_bootstrap_ci.csv` brackets
+`model_comparison.csv`'s point estimates; `metrics.json` discloses both
+uncertainty artifacts. `dashboard/tests/test_dashboard_pages.py` gains a
+Model Insights smoke test and an Overview-page assertion that the
+bootstrap-CI/CV-mean±SD captions actually render (via `streamlit.testing`'s
+`AppTest`, not just an import check).
+
+Tests: 76/76 backend (68 existing + 8 new), 5/5 dashboard (3 existing + 2
+new). Retrained + re-ran `evaluate_oracle.py` to regenerate the new
+artifacts; no feature/model changes, so the point estimates are unchanged
+from §17 — only the new CI columns/keys are new.

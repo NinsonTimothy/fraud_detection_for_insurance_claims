@@ -16,6 +16,38 @@
     },
     "operating_threshold": 0.44
   },
+  "oracle_metrics_ci": {
+    "roc_auc": {
+      "ci_lower": 0.4429701324972042,
+      "ci_upper": 0.4809453155241863,
+      "n_boot_effective": 1000
+    },
+    "pr_auc": {
+      "ci_lower": 0.051319653525879035,
+      "ci_upper": 0.05951332406783467,
+      "n_boot_effective": 1000
+    },
+    "recall": {
+      "ci_lower": 0.0,
+      "ci_upper": 0.0,
+      "n_boot_effective": 1000
+    },
+    "precision": {
+      "ci_lower": 0.0,
+      "ci_upper": 0.0,
+      "n_boot_effective": 1000
+    },
+    "f1": {
+      "ci_lower": 0.0,
+      "ci_upper": 0.0,
+      "n_boot_effective": 1000
+    },
+    "accuracy": {
+      "ci_lower": 0.9361851491569391,
+      "ci_upper": 0.943579766536965,
+      "n_boot_effective": 1000
+    }
+  },
   "oracle_n_rows": 15420,
   "oracle_fraud_rate": 0.05985732814526589,
   "n_features_total": 70,
@@ -30,5 +62,5 @@
     "number_of_vehicles_involved",
     "auto_year"
   ],
-  "generated_at": "2026-09-19T17:45:30.509977+00:00"
+  "generated_at": "2026-09-19T17:49:09.032623+00:00"
 }

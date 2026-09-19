@@ -108,3 +108,10 @@ with tab3:
         "zip3_risk_tier feature that has since been removed (PB-02). Refitting per fold (as this table "
         "does) is kept as the honest pattern going forward."
     )
+    st.caption(
+        "SH-04: `_mean`/`_std` here answer \"how much would this move on a different SPLIT of the "
+        "training data\" — a different, complementary question to the bootstrap 95% confidence "
+        "intervals on the Overview page (\"how much would this move on a different SAMPLE of the "
+        "same fixed holdout split\", `data/processed/holdout_bootstrap_ci.csv`). Both are reported; "
+        "neither replaces the other."
+    )

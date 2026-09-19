@@ -48,6 +48,23 @@ def load_cross_validation() -> pd.DataFrame:
 
 
 @st.cache_data
+def load_bootstrap_ci() -> pd.DataFrame:
+    """SH-04: bootstrap 95% CI for every point-estimate metric in
+    model_comparison.csv, on the SAME fixed holdout split (complementary
+    to load_cross_validation()'s across-fold mean+-SD — see
+    backend/app/ml/uncertainty.py's module docstring for the distinction)."""
+    path = PROCESSED_DIR / "holdout_bootstrap_ci.csv"
+    return pd.read_csv(path) if path.exists() else pd.DataFrame()
+
+
+def bootstrap_ci_for(bootstrap_df: pd.DataFrame, model: str, metric: str) -> tuple[float, float] | None:
+    row = bootstrap_df[(bootstrap_df["model"] == model) & (bootstrap_df["metric"] == metric)]
+    if row.empty:
+        return None
+    return float(row.iloc[0]["ci_lower"]), float(row.iloc[0]["ci_upper"])
+
+
+@st.cache_data
 def load_shap_importance() -> pd.DataFrame:
     return pd.read_csv(PROCESSED_DIR / "shap_feature_importance.csv")
 

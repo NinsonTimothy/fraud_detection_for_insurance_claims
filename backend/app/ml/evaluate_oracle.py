@@ -27,6 +27,7 @@ from xgboost import XGBClassifier
 from app.ml.feature_engineering import align_to_training_columns, engineer_features
 from app.ml.oracle_adapter import load_oracle_raw, map_oracle_to_raw_schema
 from app.ml.psi import psi_report
+from app.ml.uncertainty import bootstrap_metric_ci
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 MODELS_DIR = PROJECT_ROOT / "models"
@@ -68,6 +69,13 @@ def evaluate_shipped_model_on_oracle():
     recall = tp / max(1, tp + fn)
     precision = tp / max(1, tp + fp)
 
+    # SH-04: bootstrap 95% CI for the Oracle numbers too, not just the
+    # internal holdout — 15,420 rows is large, but the collapse itself
+    # (recall/precision near 0) is exactly the kind of number worth
+    # showing an interval around rather than a bare point estimate. See
+    # uncertainty.py's module docstring.
+    oracle_ci = bootstrap_metric_ci(y_oracle.values, proba, threshold=operating_threshold, n_boot=1000, random_state=42)
+
     # Which trained columns go constant on Oracle-mapped data?
     n_unique = X_oracle.nunique()
     constant_cols = set(n_unique[n_unique <= 1].index)
@@ -100,6 +108,9 @@ def evaluate_shipped_model_on_oracle():
             "confusion_matrix": {"tn": tn, "fp": fp, "fn": fn, "tp": tp},
             "operating_threshold": float(operating_threshold),
         },
+        # SH-04: bootstrap 95% CI keyed the same as oracle_metrics above —
+        # e.g. oracle_metrics_ci["roc_auc"] = {"ci_lower": ..., "ci_upper": ...}.
+        "oracle_metrics_ci": oracle_ci,
         "oracle_n_rows": int(len(oracle_raw)),
         "oracle_fraud_rate": float(y_oracle.mean()),
         "n_features_total": len(feature_columns),
