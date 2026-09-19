@@ -19,7 +19,7 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.db.models import AuditLogEntry, Base, Claim, ScoredClaim
-from app.db.persistence import persist_escalation, persist_scored_claim, persist_scored_claims_batch
+from app.db.persistence import _sanitize_for_json, persist_escalation, persist_scored_claim, persist_scored_claims_batch
 
 SAMPLE_PAYLOAD = {"age": 35, "insured_zip": 468000}
 SAMPLE_RESULT = {
@@ -171,3 +171,51 @@ class TestPersistEscalation:
         entry = persist_escalation(db, claim.id, "", "note")
         db.commit()
         assert entry.actor == "dashboard_analyst"
+
+
+class TestSanitizeForJson:
+    """PB-26: a batch-scored claim's raw payload can contain a real float
+    NaN (any optional field pandas parsed from a blank CSV cell) — stored
+    fine via json.dumps' default allow_nan=True, but Starlette's default
+    JSONResponse (allow_nan=False) later 500s trying to send it back out
+    in GET /claims / GET /claims/{id}. _sanitize_for_json() is what
+    persist_scored_claim()/persist_scored_claims_batch() apply before
+    ever writing raw_payload, so nothing not-RFC-8259-JSON-compliant is
+    ever persisted in the first place."""
+
+    def test_replaces_nan_and_infinity_with_none(self):
+        cleaned = _sanitize_for_json({"a": float("nan"), "b": float("inf"), "c": float("-inf")})
+        assert cleaned == {"a": None, "b": None, "c": None}
+
+    def test_leaves_ordinary_values_untouched(self):
+        cleaned = _sanitize_for_json({"age": 35, "name": "reading", "amount": 1234.5, "flag": True, "missing": None})
+        assert cleaned == {"age": 35, "name": "reading", "amount": 1234.5, "flag": True, "missing": None}
+
+    def test_recurses_into_nested_dicts_and_lists(self):
+        cleaned = _sanitize_for_json({"outer": {"inner": float("nan")}, "items": [1, float("nan"), 3]})
+        assert cleaned == {"outer": {"inner": None}, "items": [1, None, 3]}
+
+    def test_persist_scored_claim_stores_none_not_nan(self, db):
+        claim = persist_scored_claim(db, {"age": 35, "total_claim_amount": float("nan")}, SAMPLE_RESULT)
+        db.flush()
+        assert claim.raw_payload["total_claim_amount"] is None
+
+    def test_persist_scored_claims_batch_stores_none_not_nan(self, db):
+        raw_rows = [{"age": 35, "total_claim_amount": float("nan"), "incident_date": float("nan")}]
+        claim_ids = persist_scored_claims_batch(db, raw_rows, [SAMPLE_RESULT])
+        db.flush()
+        claim = db.query(Claim).filter(Claim.id == claim_ids[0]).first()
+        assert claim.raw_payload["total_claim_amount"] is None
+        assert claim.raw_payload["incident_date"] is None
+        # A JSON round-trip through a real DB (not just the in-memory
+        # object) is the actual regression this ticket is about -- the
+        # in-process ORM object alone wouldn't have caught the original
+        # bug, since the failure only showed up on re-serializing what
+        # was actually persisted.
+        db.commit()
+        reloaded = db.query(Claim).filter(Claim.id == claim_ids[0]).first()
+        import json
+        # allow_nan=False mirrors Starlette's default JSONResponse, which is
+        # what actually raised in the original bug -- plain json.dumps()
+        # with its own default (allow_nan=True) would NOT catch this.
+        json.dumps(reloaded.raw_payload, allow_nan=False)

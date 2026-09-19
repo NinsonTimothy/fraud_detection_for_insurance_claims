@@ -201,6 +201,39 @@ def test_missing_zip_and_dates_in_batch_csv_is_not_an_error(client):
     assert len(r.json()) == 2
 
 
+def test_batch_scored_claim_with_missing_optional_fields_is_retrievable_afterward(client):
+    """PB-26: found by live end-to-end testing (POST /score/batch, then
+    GET the resulting claim back), not by this suite originally — a batch
+    CSV row with a blank optional field (total_claim_amount/incident_date/
+    policy_bind_date, all legitimately optional — see PB-20) round-trips
+    through pandas as a real float NaN, and nothing sanitized that NaN
+    before persist_scored_claims_batch() wrote it into Claim.raw_payload
+    (a JSON column). Storing it succeeded (json.dumps allows NaN by
+    default), but GET /claims/{id} and GET /claims both re-serialize that
+    same payload through Starlette's default JSONResponse, which uses
+    allow_nan=False (RFC-compliant JSON has no NaN token) -- so every
+    claim scored from a batch row with any blank optional field 500'd the
+    instant anyone tried to look at it again, even though scoring itself
+    had returned 200. Reproduced directly against a live server before
+    this test was written. Fixed by db/persistence.py's
+    _sanitize_for_json(), which replaces NaN with None before the write."""
+    csv_bytes = io.BytesIO(b"age,total_claim_amount,incident_date,policy_bind_date\n52,,,\n")
+    batch = client.post("/score/batch", files={"file": ("blank_fields.csv", csv_bytes, "text/csv")})
+    assert batch.status_code == 200
+    claim_id = batch.json()[0]["claim_id"]
+
+    detail = client.get(f"/claims/{claim_id}")
+    assert detail.status_code == 200
+    payload = detail.json()["raw_payload"]
+    assert payload["total_claim_amount"] is None
+    assert payload["incident_date"] is None
+    assert payload["policy_bind_date"] is None
+
+    listing = client.get("/claims")
+    assert listing.status_code == 200
+    assert any(row["claim_id"] == claim_id for row in listing.json())
+
+
 def test_batch_scored_claim_zip_masks_identically_to_single_scored_claim(client):
     """PB-20: a batch-scored claim's insured_zip used to be corrupted in
     storage by pandas' automatic int->float64 upcast whenever ANY row in

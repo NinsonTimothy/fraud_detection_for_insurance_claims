@@ -1605,3 +1605,83 @@ project actually does answer.
 Tests: 137/137 backend (132 existing + 5 `test_generate_metrics_report.py`),
 11/11 dashboard (unaffected). No retrain, no scoring-path code changed —
 this ticket adds a docs-generation script plus documentation-only edits.
+
+### 28. Batch-scored claims 500'd on re-retrieval whenever an optional field was blank (PB-26)
+
+Found by live end-to-end testing against a real running server, not by
+`pytest` — the exact case this project's "reproduce first" discipline
+exists for. Sequence: `POST /score/batch` a 2-row CSV where one row left
+an optional field (`total_claim_amount`) genuinely blank — legal and
+expected per PB-20's own fix, not an edge case — got a clean `200` back.
+`GET /claims/{that claim's id}` immediately afterward returned a bare
+`500 Internal Server Error`, with no detail in the response body at all
+(`ValueError: Out of range float values are not JSON compliant`, visible
+only in the server log). `GET /claims` (the list endpoint) failed the
+same way the instant it tried to list ANY claim with this problem.
+
+**Root cause.** A blank CSV cell round-trips through
+`pd.read_csv(..., na_values=[""])` as a real Python float NaN.
+`api/scoring.py`'s `/score/batch` builds `raw_rows =
+df.to_dict(orient="records")` directly from that DataFrame and hands it
+to `persist_scored_claims_batch()` (`db/persistence.py`) with no
+sanitization at all — nothing between the DataFrame and the
+`Claim.raw_payload` JSON column ever converted that NaN to `None`. The
+*write* succeeded silently: `json.dumps`'s own default is `allow_nan=True`,
+so a literal `NaN` token got written into the stored JSON text without
+complaint (confirmed directly by reading the raw SQLite row:
+`{"total_claim_amount": NaN, ...}` — not valid RFC 8259 JSON, but Python's
+json module doesn't enforce that by default). The *read* is where it
+broke: `GET /claims`/`GET /claims/{id}` re-serialize that same payload
+through Starlette's default `JSONResponse`, which — unlike `json.dumps`'s
+own default — sets `allow_nan=False`, so any claim carrying so much as
+one NaN blew up the instant anyone tried to look at it again, even though
+scoring itself had already returned a real `200`.
+
+`/score` (single-claim) was never affected: `ClaimPayload.model_dump(exclude_none=True)`
+already leaves an unsupplied field genuinely ABSENT from the payload dict
+rather than present-with-NaN, so this specific failure mode can't occur
+on that path — which is exactly why the existing single-claim-scoring
+test suite never caught it, and why this bug is specific to the
+batch/pandas path.
+
+**Why the existing test suite missed this.** PB-20's own
+`test_batch_csv_with_missing_optional_numeric_field_is_200_not_422`
+(added for a different, already-fixed bug) checks only that `/score/batch`
+itself returns `200` for a blank optional field — it never follows up
+with a `GET /claims/{id}` to confirm the claim it just created can
+actually be read back. That's a real coverage gap, not a flaw in that
+test's own logic; it just wasn't testing the thing this ticket found.
+
+**Fix.** `db/persistence.py` gains `_sanitize_for_json()` — recursively
+replaces any NaN/Infinity float (or a pandas `NaT`, detected the same
+dependency-free `x != x` way, with no pandas/numpy import needed) with
+`None`, applied to every payload at the ONE shared choke point both
+`/score`+`/score/batch` and the dashboard's Score a claim / Batch review
+pages already write through (`persist_scored_claim()`/
+`persist_scored_claims_batch()` — the same "one write path, not two that
+can drift" reasoning PB-12 already established for this module, so this
+one fix covers both the API and the dashboard automatically). Re-verified
+directly against a live server after the fix: the same reproduction
+sequence (blank-field batch row -> `200` -> `GET /claims/{id}`) now
+returns `200` with `"total_claim_amount": null`, and `GET /claims`
+lists it correctly.
+
+`backend/tests/test_persistence.py` (+5, new `TestSanitizeForJson` class):
+unit tests for `_sanitize_for_json()` itself (NaN/Infinity -> `None`,
+ordinary values untouched, recurses into nested dicts/lists), plus two
+tests that go through the real write functions and a real DB round-trip
+— the last one specifically re-serializes the RELOADED row with
+`json.dumps(..., allow_nan=False)` (mirroring Starlette's own default,
+not `json.dumps`'s permissive one) so it actually fails the way the
+original bug did if the fix ever regresses.
+`backend/tests/test_client_error_handling.py` (+1): an end-to-end test
+through the real FastAPI app — batch-score a row with blank optional
+fields, then `GET` both the individual claim and the claims list,
+asserting `200` and `null` (not a stringified `"nan"` or a crash) for
+every blank field.
+
+Tests: 143/143 backend (137 existing + 6 new across the two files above),
+11/11 dashboard (unaffected — no dashboard code changed, though the fix
+covers the dashboard's Batch review page equally since it shares
+`persist_scored_claims_batch()`). No retrain — this is a persistence-layer
+fix, not a scoring or feature-engineering change.
