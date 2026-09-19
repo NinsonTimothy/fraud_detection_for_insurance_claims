@@ -11,13 +11,18 @@ proactively than when a panel member finds them first.
   `docs/ml_feature_critique.md` and the Model Insights page's audit tab).
   Every metric in this project carries real uncertainty at this sample
   size — report the 5-fold CV range, not just the point estimate.
-- **`zip3_risk_tier` is documented, disclosed target-encoding leakage,
-  not fixed.** It's built from the same 1,000 rows the model trains on and
-  is the single largest share of the model's SHAP weight (see Model
-  Insights). The honest fix (recompute per-CV-fold, or drop it) is a
-  one-line change in `backend/app/ml/train.py` — left as an explicit,
-  disclosed design choice rather than silently applied, so the "what would
-  actually change if you fixed this" question has a real answer.
+- ~~`zip3_risk_tier` is documented, disclosed target-encoding leakage, not
+  fixed~~ — **resolved (PB-02):** it was worse than disclosed leakage. This
+  dataset's `insured_zip` values are 6-digit US ZIPs, not the 5-digit form
+  the original `// 100` prefix logic assumed, so the resulting "ZIP3" was
+  actually a near-row-unique 4-digit prefix (515 groups from 1,000 rows,
+  median group size 2.0). It let the model memorize labels on train
+  (0.2%-71.8% fraud rate by tier) while collapsing to a flat ~20-28% on
+  test, and it had absorbed 53.2% of total SHAP weight. There is no honest
+  version of a near-row-unique lookup table to keep and disclose, so it has
+  been removed entirely rather than recomputed per-fold. See
+  `docs/REBUILD_NOTES.md` for the full reproduction evidence and
+  before/after metrics.
 - **`is_highrisk_hobby` / `is_exec_occupation` are dataset artifacts, not
   demonstrated fraud signal** — see Model Insights → Feature quality audit.
   Kept because dropping them silently would misrepresent what this build's
@@ -30,14 +35,18 @@ proactively than when a panel member finds them first.
   `sklearn.OrdinalEncoder`). `feature_engineering.py`'s `SEVERITY_ORDINAL`
   matches it exactly; the `TODO-VERIFY` comment has been removed.
 - **External validation (Oracle) shows the model does not generalize past
-  its own training distribution** — ROC-AUC collapses from ~0.66 (internal)
-  to ~0.48 (Oracle, statistically random). Root cause is quantified: ~98%
-  of the model's SHAP weight sits on features that are constant once
-  Oracle-mapped data passes through, because Oracle has no ZIP code, no
-  incident-severity field, and no claim-dollar breakdown. A stress test
-  (fresh models trained directly on Oracle's own fields, ROC-AUC ~0.81)
-  confirms this is a feature-availability problem, not evidence Oracle
-  itself is unlearnable. See the Monitoring page for the full breakdown.
+  its own training distribution.** Root cause is feature-availability, not
+  a data problem: Oracle has no incident-severity field and no claim-dollar
+  breakdown, so every feature derived from those collapses to a constant
+  fallback on Oracle-mapped data. A stress test (fresh models trained
+  directly on Oracle's own fields) confirms Oracle itself is learnable
+  fraud data. **PB-02 note:** an earlier version of this bullet also
+  attributed a large share of this collapse to `zip3_risk_tier` (no ZIP
+  code in Oracle) — that feature has since been removed entirely as a
+  near-row-unique leakage bug, not kept as disclosed leakage, so it's no
+  longer a contributing factor. Exact ROC-AUC/SHAP-share figures are
+  regenerated from `models/metrics.json` and the Oracle validation report
+  (see the Monitoring page), not hand-typed here.
 - **No prior-claims-history / fault-attribution / network-link features** —
   the primary dataset has no policyholder ID linking multiple claims, so
   "how many claims has this person filed before" (the single most-cited

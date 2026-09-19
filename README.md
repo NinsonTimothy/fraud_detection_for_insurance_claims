@@ -107,8 +107,11 @@ aegis-risk-engine/
    (fresh XGBoost reaches ROC-AUC ≈0.81 on Oracle's own fields). This is a
    feature-availability problem, precisely quantified, not a data problem.
 3. **Two specific features are flagged as not safe to treat as real signal**
-   (`zip3_risk_tier` — disclosed leakage; `is_highrisk_hobby`/`is_exec_occupation`
-   — dataset artifacts) and are individually removable in one line each.
+   (`is_highrisk_hobby`/`is_exec_occupation` — dataset artifacts) and are
+   individually removable in one line each. A third, `zip3_risk_tier`, was
+   found to be worse than disclosed leakage — a near-row-unique lookup from
+   a 4-digit ZIP prefix bug, not a genuine 3-digit ZIP3 — and has been
+   removed entirely (`docs/REBUILD_NOTES.md` §"PB-02").
 4. **What real SIU tooling has that this doesn't** (prior-claims history,
    fault attribution, network-link analysis) is named explicitly as an
    architectural ceiling this dataset cannot support — not glossed over.

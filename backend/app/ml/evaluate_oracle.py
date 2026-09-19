@@ -43,7 +43,6 @@ ORACLE_REAL_FIELDS = [
 def evaluate_shipped_model_on_oracle():
     scaler = joblib.load(MODELS_DIR / "standard_scaler.pkl")
     rf_pipeline = joblib.load(MODELS_DIR / "random_forest_final.pkl")
-    zip3_lookup = pd.read_csv(MODELS_DIR / "zip3_lookup.csv")
     with open(MODELS_DIR / "feature_columns.json") as f:
         feature_columns = json.load(f)
     with open(MODELS_DIR / "metrics.json") as f:
@@ -53,7 +52,7 @@ def evaluate_shipped_model_on_oracle():
     oracle_raw = load_oracle_raw()
     mapped_df, y_oracle = map_oracle_to_raw_schema(oracle_raw)
 
-    X_oracle = engineer_features(mapped_df, zip3_lookup)
+    X_oracle = engineer_features(mapped_df)
     X_oracle = align_to_training_columns(X_oracle, feature_columns)
     X_oracle_scaled = pd.DataFrame(scaler.transform(X_oracle), columns=feature_columns)
 

@@ -18,10 +18,12 @@ Both are carried forward here for reference; this file is the honest diff.
   same SHAP explainability, same honest-adapter methodology for Oracle
   (map only genuinely-overlapping fields, everything else to a
   documented fallback).
-- Same three architectural findings: `zip3_risk_tier` leakage,
-  `is_highrisk_hobby`/`is_exec_occupation` as dataset artifacts, and the
-  external-validation collapse being a feature-availability problem, not
-  an "Oracle is unlearnable" problem.
+- Same architectural findings on `is_highrisk_hobby`/`is_exec_occupation` as
+  dataset artifacts, and the external-validation collapse being a
+  feature-availability problem, not an "Oracle is unlearnable" problem.
+  (The `zip3_risk_tier` finding did NOT carry forward as "leakage, kept
+  in" — see PB-02 below, it was removed entirely once the real bug was
+  understood.)
 
 ## What changed, and why
 
@@ -64,6 +66,12 @@ sibling MoMo Guard project, caught and fixed here proactively rather than
 after the fact.
 
 ### 3. Honest numbers are lower than the original prototype's — expected, not a regression
+
+**Historical record — pre-PB-02.** The table below was captured against the
+model as it stood before the `zip3_risk_tier` 4-digit-prefix bug (§6 below)
+was found and fixed. It is kept for the record of what the leak looked
+like; it is not this build's current numbers. Current numbers live in
+`models/metrics.json` and the README/CHANGELOG.
 
 | Metric (Random Forest) | Original prototype | This rebuild | Why different |
 |---|---|---|---|
@@ -109,3 +117,53 @@ this note is the correction of record.
 original project's own ordinal order for it (JD < High School < ...)
 ranks a doctoral law degree below a high-school diploma, which isn't a
 real ordering worth reproducing.
+
+### 6. `zip3_risk_tier` removed entirely — it was a 4-digit-prefix bug, not disclosed leakage (PB-02)
+
+Sections 1-3 above (and the original `ml_feature_critique.md`) described
+`zip3_risk_tier` as disclosed, self-documented target-encoding leakage —
+"real, measurable, kept in because it's flagged" — the same framing as
+`is_highrisk_hobby`/`is_exec_occupation`. That framing was itself wrong.
+
+**Reproduction.** `feature_engineering.py` computed `zip3 = insured_zip //
+100`. The comment assumed `insured_zip` was a genuine 5-digit US ZIP, so
+`// 100` would produce a real 3-digit ZIP3 prefix (e.g. 10001 -> 100). But
+this dataset's `insured_zip` values are 6-digit (e.g. 605280), so `// 100`
+only drops the last two digits, leaving a 4-digit prefix (605280 -> 6052).
+Reproduced directly against `data/cleaned/insurance_claims_cleaned.csv`:
+
+- `insured_zip // 100` produces **515 distinct groups from 1,000 rows**
+  (median group size 2.0; 90.9% of groups have <=3 rows) — essentially a
+  per-row identifier, not a genuine geographic bucket.
+- Building the target-encoded lookup from train and applying it to
+  train/test separately showed near-total label memorization on train and
+  a flat, uninformative rate on test: `zip3_risk_tier_low_risk` was 0.2%
+  fraud on 55.4% of train rows vs. 28.2% on the equivalent test rows;
+  `zip3_risk_tier_high_risk` was 71.8% fraud on 27.0% of train rows vs.
+  20.0% on test.
+- `data/processed/shap_feature_importance.csv` (pre-fix) showed the three
+  `zip3_risk_tier_*` columns together accounted for **53.2% of total SHAP
+  weight** (`high_risk` 25.8% + `low_risk` 25.7% + `medium_risk` 1.6%) —
+  more than every other feature in the model combined.
+
+This matches the ticket's own cited evidence, confirming the diagnosis.
+
+**Fix.** Removed `zip3_risk_tier` (and the `_zip3_lookup_from_training()`
+helper that built it) entirely from `feature_engineering.py`, `train.py`,
+`inference.py`, `evaluate_oracle.py`, `backend/tests/test_ml_core.py`, and
+the Model Insights dashboard page's text/SHAP-flag list. `insured_zip`
+remains in `RAW_FEATURE_COLUMNS`/`MISSING_COLUMN_DEFAULTS` as an EDA-only
+raw field — no feature is derived from it anymore. There is no honest
+"recompute per-CV-fold" version of this feature worth keeping: even a
+correctly-scoped 3-digit ZIP3 on a 1,000-row dataset would still be a
+very high-cardinality, small-sample-per-bucket target encoding, and this
+build's own high-cardinality-overfitting finding (§1 above, 122 -> 74
+features) already argues against that pattern generally. Dropping it
+outright is the same principle applied consistently, not a new one.
+
+**Effect on metrics.** Retrained after this fix; see `models/metrics.json`
+and the top of this repo's README/CHANGELOG for the resulting holdout and
+CV numbers (generated from `metrics.json`, never hand-typed, per this
+project's own working rules) — the §3 table above, written against the
+PRE-PB-02 model, is left as historical record of what the leak looked
+like, not as this build's current numbers.

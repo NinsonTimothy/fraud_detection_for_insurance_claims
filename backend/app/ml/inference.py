@@ -27,7 +27,6 @@ class FraudScoringService:
     def __init__(self):
         self.rf_pipeline = joblib.load(MODELS_DIR / "random_forest_final.pkl")
         self.scaler = joblib.load(MODELS_DIR / "standard_scaler.pkl")
-        self.zip3_lookup = pd.read_csv(MODELS_DIR / "zip3_lookup.csv")
         with open(MODELS_DIR / "feature_columns.json") as f:
             self.feature_columns: list[str] = json.load(f)
         with open(MODEL_VERSION_FILE) as f:
@@ -45,7 +44,7 @@ class FraudScoringService:
         return cls._instance
 
     def _prepare(self, claims: pd.DataFrame, return_raw: bool = False):
-        X = engineer_features(claims, self.zip3_lookup)
+        X = engineer_features(claims)
         X = align_to_training_columns(X, self.feature_columns)
         X_scaled = pd.DataFrame(self.scaler.transform(X), columns=self.feature_columns, index=claims.index)
         return (X_scaled, X) if return_raw else X_scaled

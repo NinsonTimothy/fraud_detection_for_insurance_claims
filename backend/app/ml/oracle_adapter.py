@@ -45,11 +45,17 @@ Fields Oracle has NO equivalent for at all (left to fallback):
   — see feature_engineering.py's CATEGORICAL_COLUMNS note — so mapping it
   would have zero effect and is skipped)
 
-This means `zip3_risk_tier` — the single largest share of this model's SHAP
-weight (see docs/generalization_and_cv_results.md) — is CONSTANT for every
-Oracle row (no `insured_zip` to compute it from), and `incident_severity`/
-`is_major_damage` are equally constant. This is exactly the generalization
-question this adapter exists to measure honestly, not paper over.
+This means `incident_severity`/`is_major_damage`-derived features are
+constant for every Oracle row (Oracle has no equivalent field, so they all
+fall back to the same documented default). This is exactly the
+generalization question this adapter exists to measure honestly, not paper
+over.
+
+PB-02 note: an earlier version of this docstring also named
+`zip3_risk_tier` as constant-on-Oracle and as "the single largest share of
+this model's SHAP weight" — that feature has since been removed entirely
+(it was a near-row-unique target-encoding bug, not usable signal; see
+feature_engineering.py's module docstring), so it no longer applies here.
 """
 from __future__ import annotations
 

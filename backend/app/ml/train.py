@@ -25,7 +25,7 @@ from xgboost import XGBClassifier
 
 from app.ml.cost_threshold import find_cost_optimal_threshold
 from app.ml.explainer import ClaimExplainer
-from app.ml.feature_engineering import engineer_features, _zip3_lookup_from_training
+from app.ml.feature_engineering import engineer_features
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DATA_CLEANED = PROJECT_ROOT / "data" / "cleaned" / "insurance_claims_cleaned.csv"
@@ -44,13 +44,10 @@ def load_and_split():
 
 
 def build_features(train_df, test_df, y_train):
-    # zip3 lookup built ONLY from train, same convention as the original
-    # project's own disclosed (not fixed) leakage — see feature_engineering.py.
-    zip3_lookup = _zip3_lookup_from_training(train_df, y_train)
-    X_train = engineer_features(train_df, zip3_lookup)
-    X_test = engineer_features(test_df, zip3_lookup)
+    X_train = engineer_features(train_df)
+    X_test = engineer_features(test_df)
     X_test = X_test.reindex(columns=X_train.columns, fill_value=0)
-    return X_train, X_test, zip3_lookup
+    return X_train, X_test
 
 
 def evaluate(name, model, X_test, y_test, threshold=0.5):
@@ -72,21 +69,18 @@ def evaluate(name, model, X_test, y_test, threshold=0.5):
 
 
 def cross_validate_model(name, make_estimator, full_df: pd.DataFrame, y_all: pd.Series):
-    """Full-pipeline 5-fold CV: refits the ZIP3 target-encoding lookup, the
-    scaler, and the classifier from scratch on each fold's own training
-    partition, then scores the held-out fold.
+    """Full-pipeline 5-fold CV: refits the scaler and the classifier from
+    scratch on each fold's own training partition, then scores the held-out
+    fold.
 
     This is NOT the same as calling sklearn's `cross_validate()` on an
     already-engineered feature matrix — an earlier version of this file did
-    that, and it produced a badly inflated ROC-AUC (~0.94, vs. ~0.66-0.78 on
-    a genuine single holdout split checked across 6 seeds). The reason:
-    `zip3_risk_tier` (see feature_engineering.py's module docstring, point
-    2) is a target-encoded lookup built from whichever rows it's fit on —
-    building it ONCE on the full pool and then cross-validating the
-    already-encoded matrix lets each fold's "held-out" rows be scored using
-    a feature that was partly built FROM their own label. Refitting the
-    entire pipeline per fold (as this function does) closes that leak and
-    produces the honest, reportable number."""
+    that, and (back when feature_engineering.py still built the leaky
+    `zip3_risk_tier` feature, see PB-02) it produced a badly inflated
+    ROC-AUC (~0.94, vs. ~0.66-0.78 on a genuine single holdout split checked
+    across 6 seeds). Refitting the entire pipeline per fold (as this
+    function does) is kept as the honest pattern going forward even though
+    `engineer_features()` is no longer target-encoded on anything."""
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
     fold_metrics = {"roc_auc": [], "pr_auc": [], "f1": [], "recall": [], "precision": []}
     for tr_idx, va_idx in skf.split(full_df, y_all):
@@ -95,9 +89,8 @@ def cross_validate_model(name, make_estimator, full_df: pd.DataFrame, y_all: pd.
         y_tr = y_all.iloc[tr_idx].reset_index(drop=True)
         y_va = y_all.iloc[va_idx].reset_index(drop=True)
 
-        zip3_lookup_fold = _zip3_lookup_from_training(tr_df, y_tr)
-        X_tr = engineer_features(tr_df, zip3_lookup_fold)
-        X_va = engineer_features(va_df, zip3_lookup_fold).reindex(columns=X_tr.columns, fill_value=0)
+        X_tr = engineer_features(tr_df)
+        X_va = engineer_features(va_df).reindex(columns=X_tr.columns, fill_value=0)
 
         scaler_fold = StandardScaler()
         Xtr_scaled = scaler_fold.fit_transform(X_tr)
@@ -133,7 +126,7 @@ def main():
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
     train_df, test_df, y_train, y_test = load_and_split()
-    X_train, X_test, zip3_lookup = build_features(train_df, test_df, y_train)
+    X_train, X_test = build_features(train_df, test_df, y_train)
     feature_columns = list(X_train.columns)
 
     scaler = StandardScaler()
@@ -238,7 +231,8 @@ def main():
     # rebuilds ClaimExplainer directly from the loaded RF pipeline at
     # startup (see inference.py), so a saved copy would be dead weight
     # that could silently drift from the shipped model (PB-17).
-    zip3_lookup.to_csv(MODELS_DIR / "zip3_lookup.csv", index=False)
+    # NOTE: no zip3_lookup.csv artifact anymore — PB-02 removed the
+    # zip3-derived feature entirely; see feature_engineering.py.
     with open(MODELS_DIR / "feature_columns.json", "w") as f:
         json.dump(feature_columns, f)
 

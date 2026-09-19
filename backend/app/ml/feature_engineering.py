@@ -7,8 +7,8 @@ through, so they can never silently drift apart.
 Raw schema this expects (35 columns `RAW_FEATURE_COLUMNS`, i.e. everything
 except the label `fraud_reported`) is documented at the bottom of this file.
 
-Three engineered feature groups are worth reading before touching this file,
-because they are exactly the three the project's own feature critique
+Two engineered feature groups are worth reading before touching this file,
+because they are exactly the ones the project's own feature critique
 (`docs/ml_feature_critique.md`) flags as NOT safe to treat as genuine fraud
 signal — kept in because dropping them silently would misrepresent what the
 shipped model in this build actually does, but each is deliberately,
@@ -21,17 +21,29 @@ individually inspectable via `RISKY_FEATURE_COLUMNS` below:
      certainly a small-sample/synthetic-generation artifact, and leaning on
      it is close to proxy-discrimination (lifestyle -> risk score) real
      insurance regulators scrutinize. Kept, but flagged.
-  2. `zip3_risk_tier_*` — target-encoded from the SAME 1,000 rows the model
-     trains on (not a held-out fold), a leakage pattern the original
-     project's own preprocessing notebook already self-documented but never
-     fixed. It is real, measurable leakage: this feature's information
-     content partially comes from having seen the label.
-  3. `is_exec_occupation` — same shape as (1) at lower severity (36.8% vs.
+  2. `is_exec_occupation` — same shape as (1) at lower severity (36.8% vs.
      24.7% base rate, n=76).
 
-For the honest fix, see `docs/LIMITATIONS.md` — recomputing zip3 per-CV-fold
-or dropping (1)/(3) entirely are both one-line changes in `train.py`, left
-as an explicit, disclosed design choice rather than silently done for you.
+PB-02 (fixed, was point 2 here): this file used to also build a
+`zip3_risk_tier_*` target-encoded feature from `insured_zip // 100`. That
+comment was written under the assumption the result was a genuine 3-digit
+ZIP3 prefix, matching Version A's original approach. It is not: this
+dataset's `insured_zip` values are already 6-digit US ZIPs (e.g. 605280),
+so `// 100` only drops the last 2 digits, leaving a 4-digit prefix that is
+almost unique per row (515 distinct groups from 1,000 rows, median group
+size 2.0, 90.9% of groups with <=3 rows). Combined with being fit on the
+SAME rows it scores, this let the model memorize labels through the lookup
+table: 0.2% fraud in the "low risk" tier vs. 71.8% in "high risk" on
+TRAIN, collapsing to a flat ~20-28% on TEST — and it consumed 53.2% of
+total SHAP weight while contributing nothing that generalized (holdout
+ROC-AUC 0.656 with it in, one root cause of this build measuring far below
+Project A's 0.860). Disclosing this as "leakage, kept in" was itself
+wrong once the actual bug (4-digit, not 3-digit, prefix) was understood —
+there is no honest version of a near-row-unique lookup table, so it is
+removed entirely rather than kept and disclosed. `insured_zip` remains in
+`RAW_FEATURE_COLUMNS` / `MISSING_COLUMN_DEFAULTS` as an EDA-only raw field;
+no engineered feature is derived from it anymore. See
+`docs/REBUILD_NOTES.md` for the full before/after evidence.
 """
 from __future__ import annotations
 
@@ -79,8 +91,7 @@ MISSING_COLUMN_DEFAULTS: dict[str, object] = {
 }
 
 RISKY_FEATURE_COLUMNS = [
-    "is_highrisk_hobby", "is_exec_occupation", "zip3_risk_tier_low_risk",
-    "zip3_risk_tier_medium_risk", "zip3_risk_tier_high_risk",
+    "is_highrisk_hobby", "is_exec_occupation",
 ]
 
 HIGH_RISK_HOBBIES = {"chess", "cross-fit"}
@@ -142,26 +153,9 @@ def apply_missing_defaults(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _zip3_lookup_from_training(df: pd.DataFrame, fraud_col: pd.Series) -> pd.DataFrame:
-    """Builds the target-encoded ZIP3->fraud-rate lookup table used by
-    `zip3_risk_tier`. Documented, disclosed leakage (see module docstring
-    point 2): built from the SAME rows it will be applied to at train time.
-    Saved to disk so scoring time reuses the exact training-time table."""
-    zip3 = (df["insured_zip"].astype(int) // 100).rename("zip3")
-    tmp = pd.DataFrame({"zip3": zip3, "fraud": fraud_col.values})
-    lookup = tmp.groupby("zip3")["fraud"].mean().rename("zip3_fraud_rate").reset_index()
-    return lookup
-
-
-def engineer_features(
-    df: pd.DataFrame,
-    zip3_lookup: pd.DataFrame,
-) -> pd.DataFrame:
+def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     """The single feature-engineering pipeline used by training, the live
-    API, batch scoring, and the Oracle adapter. `zip3_lookup` must be the
-    table saved at training time (see `_zip3_lookup_from_training`) — never
-    rebuilt at scoring time, or every scoring call would silently leak
-    whatever batch it's currently scoring into its own risk tiers."""
+    API, batch scoring, and the Oracle adapter."""
     df = apply_missing_defaults(df)
     out = pd.DataFrame(index=df.index)
 
@@ -185,32 +179,22 @@ def engineer_features(
 
     # --- Behavioral / structural flags (real signal) ---
     out["is_no_witness"] = (df["witnesses"] == 0).astype(int)
-    out["incident_severity_ordinal"] = df["incident_severity"].map(SEVERITY_ORDINAL).fillna(1).astype(int)  # TODO-VERIFY: ordinal order inferred, not confirmed against original preprocessing notebook — see docs/ml_feature_critique.md
+    out["incident_severity_ordinal"] = df["incident_severity"].map(SEVERITY_ORDINAL).fillna(1).astype(int)
     out["is_major_damage"] = (df["incident_severity"] == "Major Damage").astype(int)
 
-    # --- Flagged-risky features (module docstring points 1 & 3) ---
+    # --- Flagged-risky features (module docstring points 1 & 2) ---
     out["is_highrisk_hobby"] = df["insured_hobbies"].isin(HIGH_RISK_HOBBIES).astype(int)
     out["is_exec_occupation"] = (df["insured_occupation"] == "exec-managerial").astype(int)
 
-    # --- ZIP3 risk tier (module docstring point 2 — disclosed leakage) ---
-    zip3 = (df["insured_zip"].astype(int) // 100)
-    merged = zip3.rename("zip3").to_frame().merge(zip3_lookup, on="zip3", how="left")
-    fallback_rate = zip3_lookup["zip3_fraud_rate"].mean() if len(zip3_lookup) else 0.247
-    fraud_rate = merged["zip3_fraud_rate"].fillna(fallback_rate).values
-    tier = np.select(
-        [fraud_rate < 0.20, fraud_rate < 0.35],
-        ["low_risk", "medium_risk"],
-        default="high_risk",
-    )
-    out["zip3_risk_tier"] = tier
+    # PB-02: no zip3-derived feature is built anymore — see module
+    # docstring. `insured_zip` stays an EDA-only raw column.
 
     # --- Numeric passthrough ---
     for col in NUMERIC_PASSTHROUGH_COLUMNS:
         out[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
-    # --- One-hot encode categoricals (incl. insured_hobbies, zip3_risk_tier) ---
+    # --- One-hot encode categoricals (incl. insured_hobbies) ---
     cat_df = df[CATEGORICAL_COLUMNS].astype(str).copy()
-    cat_df["zip3_risk_tier"] = out.pop("zip3_risk_tier")
     dummies = pd.get_dummies(cat_df, prefix=cat_df.columns, prefix_sep="_")
     out = pd.concat([out, dummies], axis=1)
 

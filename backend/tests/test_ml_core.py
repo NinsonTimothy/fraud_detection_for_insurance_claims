@@ -12,23 +12,22 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.ml.feature_engineering import align_to_training_columns, engineer_features, _zip3_lookup_from_training
+from app.ml.feature_engineering import align_to_training_columns, engineer_features
 
 
 @pytest.fixture(scope="module")
 def sample_data():
     df = pd.read_csv(Path(__file__).resolve().parents[2] / "data" / "cleaned" / "insurance_claims_cleaned.csv")
     y = (df["fraud_reported"] == "Y").astype(int)
-    lookup = _zip3_lookup_from_training(df, y)
-    return df, y, lookup
+    return df, y
 
 
 def test_single_row_scoring_matches_batch_scoring(sample_data):
-    df, y, lookup = sample_data
-    X_batch = engineer_features(df, lookup)
+    df, y = sample_data
+    X_batch = engineer_features(df)
 
     single_row = df.iloc[[3]].reset_index(drop=True)
-    X_single = engineer_features(single_row, lookup)
+    X_single = engineer_features(single_row)
     X_single_aligned = align_to_training_columns(X_single, list(X_batch.columns))
 
     # No NaN — every category this row doesn't belong to should read 0.
@@ -47,9 +46,21 @@ def test_align_to_training_columns_fills_missing_with_zero_not_nan():
 
 
 def test_engineer_features_no_nans_on_full_dataset(sample_data):
-    df, y, lookup = sample_data
-    X = engineer_features(df, lookup)
+    df, y = sample_data
+    X = engineer_features(df)
     assert X.isna().sum().sum() == 0
+
+
+def test_no_zip3_derived_columns_survive_feature_engineering(sample_data):
+    """Regression test for PB-02: insured_zip // 100 on 6-digit US ZIPs is a
+    4-digit prefix, not a genuine 3-digit ZIP3, and was near-row-unique
+    (515 groups from 1,000 rows). The target-encoded zip3_risk_tier_* block
+    built from it let the model memorize labels on train while collapsing
+    to a flat rate on test, and consumed 53.2% of total SHAP weight. Fixed
+    by removing the zip3-derived feature entirely."""
+    df, y = sample_data
+    X = engineer_features(df)
+    assert not any(col.startswith("zip3") for col in X.columns)
 
 
 def test_missing_raw_columns_fall_back_to_documented_defaults():
