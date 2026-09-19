@@ -134,3 +134,83 @@ def test_too_many_batch_rows_is_413_not_silently_scored(client, monkeypatch):
         r = fresh_client.post("/score/batch", files={"file": ("many.csv", csv_bytes, "text/csv")})
         assert r.status_code == 413
         assert "limit 2" in r.text
+
+
+def test_batch_csv_with_missing_optional_numeric_field_is_200_not_422(client):
+    """PB-20: `_validate_numeric_columns` used to false-422 any batch row
+    with a genuinely-empty optional numeric cell, because its "present"
+    check relied on `.astype(str)` turning a missing cell into the
+    literal string "nan" — which this project's pinned pandas (3.0.2) no
+    longer does (see `_present_mask`'s docstring in scoring.py). A row
+    with total_claim_amount simply absent must score normally, not 422."""
+    csv_bytes = io.BytesIO(b"age,total_claim_amount\n35,\n40,60000\n")
+    r = client.post("/score/batch", files={"file": ("missing_optional.csv", csv_bytes, "text/csv")})
+    assert r.status_code == 200
+    assert len(r.json()) == 2
+
+
+def test_invalid_insured_zip_in_batch_csv_is_422(client):
+    """PB-20: /score/batch used to accept ANY value for insured_zip with
+    no validation at all, unlike /score's ClaimPayload schema (range
+    10,000-999,999). An out-of-range or non-numeric zip must now 422
+    with the failing row identified, exactly like /score already does."""
+    csv_bytes = io.BytesIO(b"age,insured_zip\n35,99\n40,not-a-zip\n")
+    r = client.post("/score/batch", files={"file": ("bad_zip.csv", csv_bytes, "text/csv")})
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert detail["columns"]["insured_zip"] == [0, 1]
+
+
+def test_invalid_incident_date_in_batch_csv_is_422(client):
+    """PB-20: a malformed incident_date/policy_bind_date used to sail
+    through /score/batch (no equivalent of /score's ISO-format schema
+    validation) and silently feed feature_engineering.py's per-batch-
+    median NaT fallback. Must now 422 with the offending row identified."""
+    csv_bytes = io.BytesIO(b"age,incident_date\n35,2023-05-10\n40,not-a-date\n")
+    r = client.post("/score/batch", files={"file": ("bad_date.csv", csv_bytes, "text/csv")})
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert detail["columns"]["incident_date"] == [1]
+
+
+def test_missing_zip_and_dates_in_batch_csv_is_not_an_error(client):
+    """PB-20: an ABSENT insured_zip/incident_date/policy_bind_date cell is
+    "not supplied", not invalid — must not trip the new 422 validation,
+    matching this API's "missing means use the default" semantics
+    everywhere else (apply_missing_defaults, etc.)."""
+    csv_bytes = io.BytesIO(b"age,insured_zip,incident_date\n35,,\n40,468000,2023-05-10\n")
+    r = client.post("/score/batch", files={"file": ("missing_zip_date.csv", csv_bytes, "text/csv")})
+    assert r.status_code == 200
+    assert len(r.json()) == 2
+
+
+def test_batch_scored_claim_zip_masks_identically_to_single_scored_claim(client):
+    """PB-20: a batch-scored claim's insured_zip used to be corrupted in
+    storage by pandas' automatic int->float64 upcast whenever ANY row in
+    the batch had a missing zip — reproduced directly as GET
+    /claims/{id} showing '46XXXXXX' (8 chars, from the stored float
+    468000.0) for the batch-scored claim vs. the correct '46XXXX' (6
+    chars) for the identical zip scored via /score, and a genuinely
+    missing zip in that same batch round-tripping as the nonsensical
+    'naX' instead of a real null. Fixed by `_clean_zip_column` rebuilding
+    insured_zip as plain int/None per cell before it's ever persisted."""
+    single = client.post("/score", json={"payload": {**VALID_CLAIM, "insured_zip": 468000}})
+    assert single.status_code == 200
+    single_detail = client.get(f"/claims/{single.json()['claim_id']}")
+    single_masked_zip = single_detail.json()["raw_payload"]["insured_zip"]
+    assert single_masked_zip == "46XXXX"
+
+    # One row shares the same zip as the single-claim submission above;
+    # the other row's zip is genuinely missing — deliberately mixed in
+    # the same batch, since the original bug was triggered by pandas
+    # upcasting the WHOLE column the instant any one cell was empty.
+    csv_bytes = io.BytesIO(b"age,insured_zip\n35,468000\n40,\n")
+    batch = client.post("/score/batch", files={"file": ("zips.csv", csv_bytes, "text/csv")})
+    assert batch.status_code == 200
+    rows = batch.json()
+
+    present_row = client.get(f"/claims/{rows[0]['claim_id']}").json()
+    assert present_row["raw_payload"]["insured_zip"] == single_masked_zip == "46XXXX"
+
+    missing_row = client.get(f"/claims/{rows[1]['claim_id']}").json()
+    assert missing_row["raw_payload"]["insured_zip"] is None

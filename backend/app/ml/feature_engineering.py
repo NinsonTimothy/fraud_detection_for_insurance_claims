@@ -123,6 +123,23 @@ KNOWN_OCCUPATIONS = (
     "other-service", "priv-house-serv", "prof-specialty", "protective-serv",
     "sales", "tech-support", "transport-moving",
 )
+
+# PB-20: fixed fallback for `policy_age_at_incident_days` when a SUPPLIED
+# policy_bind_date/incident_date fails to parse (see engineer_features()).
+# This is `(incident_date - bind_date).dt.days` computed over the full
+# cleaned training set, THEN median()'d and rounded — the same fixed
+# reference point training itself was fit against, not a per-request
+# statistic. Verified against the real training data by
+# tests/test_ml_core.py (same drift-guard pattern as KNOWN_HOBBIES above).
+POLICY_AGE_FALLBACK_DAYS = 4682
+
+# PB-20: fixed fallback for the incident YEAR (`vehicle_age_at_incident`)
+# when a SUPPLIED incident_date fails to parse — same bug class and same
+# fix as POLICY_AGE_FALLBACK_DAYS just above, for a different engineered
+# feature. Every row in the cleaned training data is dated 2015 (verified
+# by tests/test_ml_core.py), so this constant is simply 2015 — still
+# read from the actual data, not assumed.
+INCIDENT_YEAR_FALLBACK = 2015
 # PB-24: this rank order is CONFIRMED, not inferred — the original FYP
 # project's own 02_preprocessing.ipynb / 03_modelling.ipynb encode
 # incident_severity with sklearn.OrdinalEncoder using this exact table
@@ -216,7 +233,28 @@ def engineer_features(df: pd.DataFrame, include_proxy_features: bool | None = No
     # SH-06: clip(lower=0) — one row in the cleaned dataset has
     # incident_date before policy_bind_date (a -20 day "age"), a data
     # quality artifact, not a real pre-bind claim.
-    out["policy_age_at_incident_days"] = policy_age_days.fillna(policy_age_days.median() if policy_age_days.notna().any() else 365).clip(lower=0)
+    #
+    # PB-20 (fixed): this used to fall back to `policy_age_days.median()`
+    # — computed from THIS CALL'S OWN batch, not from training data. Both
+    # `apply_missing_defaults()` (above, for a genuinely-absent raw date)
+    # and a well-formed date always avoid this branch entirely; it's only
+    # reached when a SUPPLIED date string fails to parse (garbage text —
+    # reachable via /score/batch, which unlike /score's schema has no
+    # ISO-date format check on these two columns; see the validation fix
+    # in scoring.py). Reproduced directly: scoring one row with an
+    # unparseable date ALONE vs. batched alongside rows with wildly
+    # different policy ages produced two DIFFERENT `fraud_probability`
+    # values for the identical row — the imputed value depended on
+    # whatever else happened to share the request, not on anything about
+    # the row itself. Fixed by falling back to `POLICY_AGE_FALLBACK_DAYS`,
+    # a FIXED constant (the real training data's own median, 4,682 days —
+    # verified against `data/cleaned/insurance_claims_cleaned.csv` by
+    # `tests/test_ml_core.py`, same drift-guard pattern as PB-19's
+    # `KNOWN_HOBBIES`/`KNOWN_OCCUPATIONS`) — every batch now imputes a
+    # row with a bad date the exact same way, independent of request
+    # composition, matching how `MISSING_COLUMN_DEFAULTS`'s fixed literal
+    # date defaults already behave for the "field simply absent" case.
+    out["policy_age_at_incident_days"] = policy_age_days.fillna(POLICY_AGE_FALLBACK_DAYS).clip(lower=0)
 
     # SH-06 (fixed): is_new_customer used to threshold
     # `policy_age_at_incident_days < 30`. Reproduced against the cleaned
@@ -238,7 +276,20 @@ def engineer_features(df: pd.DataFrame, include_proxy_features: bool | None = No
     # because it's directionally consistent with the literature and does
     # no harm, not because it's a strong predictor in this small dataset.
     out["is_new_customer"] = (df["months_as_customer"] < 24).astype(int)
-    out["vehicle_age_at_incident"] = (incident_date.dt.year.fillna(incident_date.dt.year.median() if incident_date.notna().any() else 2015) - df["auto_year"]).clip(lower=0)
+    # PB-20 (fixed): same bug class as policy_age_at_incident_days above —
+    # this used to fall back to `incident_date.dt.year.median()` computed
+    # from THIS CALL'S OWN batch whenever incident_date failed to parse.
+    # Reproduced directly: scoring one row with an unparseable
+    # incident_date ALONE vs. batched alongside two rows both incidenting
+    # in 2026 changed this row's imputed incident year by 11 (median
+    # 2015 -> 2026), which alone moved vehicle_age_at_incident by 11
+    # years and fraud_probability by a further ~0.003 on top of the
+    # policy_age fix above. INCIDENT_YEAR_FALLBACK is the real training
+    # data's own incident-year median (every one of its 1,000 rows is
+    # dated 2015, so this is simply 2015 — verified against
+    # data/cleaned/insurance_claims_cleaned.csv by tests/test_ml_core.py),
+    # not a per-request statistic.
+    out["vehicle_age_at_incident"] = (incident_date.dt.year.fillna(INCIDENT_YEAR_FALLBACK) - df["auto_year"]).clip(lower=0)
 
     # --- Behavioral / structural flags (real signal) ---
     out["is_no_witness"] = (df["witnesses"] == 0).astype(int)

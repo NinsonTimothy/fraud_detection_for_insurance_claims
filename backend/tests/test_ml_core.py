@@ -94,3 +94,50 @@ def test_known_hobbies_and_occupations_match_the_actual_training_data(sample_dat
     assert set(KNOWN_OCCUPATIONS) == set(df["insured_occupation"].unique())
     assert len(KNOWN_HOBBIES) == len(set(KNOWN_HOBBIES))  # no duplicates
     assert len(KNOWN_OCCUPATIONS) == len(set(KNOWN_OCCUPATIONS))
+
+
+def test_date_fallback_constants_match_the_actual_training_data(sample_data):
+    """PB-20: POLICY_AGE_FALLBACK_DAYS/INCIDENT_YEAR_FALLBACK are hardcoded
+    snapshots (same drift-guard rationale as KNOWN_HOBBIES above) of two
+    statistics actually computed from the training data — the real
+    (incident_date - policy_bind_date).dt.days median, and the real
+    incident_date.dt.year median. Catches drift if the dataset changes."""
+    from app.ml.feature_engineering import INCIDENT_YEAR_FALLBACK, POLICY_AGE_FALLBACK_DAYS
+    df, _ = sample_data
+    bind = pd.to_datetime(df["policy_bind_date"], errors="coerce")
+    incident = pd.to_datetime(df["incident_date"], errors="coerce")
+    age_days = (incident - bind).dt.days
+    assert POLICY_AGE_FALLBACK_DAYS == int(age_days.median())
+    assert INCIDENT_YEAR_FALLBACK == int(incident.dt.year.median())
+
+
+def test_engineered_features_are_independent_of_batch_composition():
+    """PB-20 (fixed): policy_age_at_incident_days and vehicle_age_at_incident
+    used to fall back to `.median()` computed from whatever rows happened
+    to share the CURRENT call, when a supplied policy_bind_date/
+    incident_date failed to parse — so the same row's imputed features
+    (and therefore its score) depended on which other rows happened to be
+    in the same batch. Reproduced directly and fixed by switching both
+    fallbacks to fixed, training-data-derived constants: engineering the
+    IDENTICAL row (an unparseable incident_date) alone vs. batched
+    alongside rows with wildly different policy ages/incident years must
+    now produce byte-identical engineered features."""
+    row_with_bad_date = {
+        "policy_bind_date": "2018-01-01", "incident_date": "not-a-date", "auto_year": 2015,
+    }
+    # Deliberately far from the training data's own median policy age/
+    # incident year, so a batch-dependent bug would show up clearly.
+    other_rows = [
+        {"policy_bind_date": "1990-01-01", "incident_date": "2026-01-01", "auto_year": 2000},
+        {"policy_bind_date": "2025-12-01", "incident_date": "2026-01-01", "auto_year": 2020},
+    ]
+
+    alone = engineer_features(pd.DataFrame([row_with_bad_date]))
+    batched = engineer_features(pd.DataFrame([row_with_bad_date, *other_rows]))
+
+    assert alone["policy_age_at_incident_days"].iloc[0] == batched["policy_age_at_incident_days"].iloc[0]
+    assert alone["vehicle_age_at_incident"].iloc[0] == batched["vehicle_age_at_incident"].iloc[0]
+
+    from app.ml.feature_engineering import INCIDENT_YEAR_FALLBACK, POLICY_AGE_FALLBACK_DAYS
+    assert alone["policy_age_at_incident_days"].iloc[0] == POLICY_AGE_FALLBACK_DAYS
+    assert alone["vehicle_age_at_incident"].iloc[0] == max(0, INCIDENT_YEAR_FALLBACK - 2015)

@@ -1330,3 +1330,120 @@ Tests: 106/106 backend (105 existing + 1 new), 11/11 dashboard (7
 existing + 4 new). No retrain needed — no feature-engineering
 *computation* changed, only two new documented constants and the
 dashboard's own input handling.
+
+### 25. Train/serve skew from per-batch medians, and unsafe batch zip/date parsing (PB-20)
+
+Three independent, reproduced bugs, all touching how `/score/batch`
+handles values that fail to parse cleanly.
+
+**Train/serve skew.** `feature_engineering.py`'s `engineer_features()`
+derives `policy_age_at_incident_days` and `vehicle_age_at_incident` from
+`incident_date`/`policy_bind_date`; when either date failed to parse
+(`NaT`), both fell back to `.median()` computed from **whichever rows
+happened to be in the current call** — `policy_age_days.median() if
+policy_age_days.notna().any() else 365` and the equivalent for the
+incident year. That means the identical claim, with the identical
+malformed date, could score differently depending on what else was in
+its batch — a live, correctness-breaking form of train/serve skew, and
+a different failure mode from every other fallback in this file (which
+are all fixed constants — see `MISSING_COLUMN_DEFAULTS`). Reproduced
+directly: engineered features for one row with an unparseable
+`incident_date`, computed alone vs. batched alongside two rows with
+deliberately extreme policy ages/incident years, differed in both
+derived columns, which moved `fraud_probability` by a small but real and
+non-zero amount (this was caught by diffing all engineered feature
+columns between the two runs, not just the final score — the first fix
+attempt covered only `policy_age_at_incident_days` and still left a
+~0.0027 skew from `vehicle_age_at_incident`'s own, separate median
+fallback).
+
+**Fix.** Both fallbacks now use fixed constants computed ONCE from the
+real training data and hardcoded — the same pattern `KNOWN_HOBBIES`
+(§24) and `MISSING_COLUMN_DEFAULTS` already establish:
+`POLICY_AGE_FALLBACK_DAYS = 4682` (the real median of
+`(incident_date - policy_bind_date).dt.days` over the cleaned training
+set) and `INCIDENT_YEAR_FALLBACK = 2015` (the real median incident year
+— every row in this dataset is dated 2015, verified directly rather than
+assumed). Re-verified after the fix: scoring the identical malformed-date
+row alone vs. batched now produces byte-identical `fraud_probability`
+(`0.7568784687066251` in both cases).
+
+**Unsafe batch zip/date parsing.** Unlike `/score`'s `ClaimPayload`
+schema (range-checked `insured_zip`, ISO-format-validated dates),
+`/score/batch` accepted any value at all for `insured_zip`/
+`incident_date`/`policy_bind_date` — no equivalent validation existed on
+that path. Two concrete consequences, both reproduced directly against a
+live `TestClient`:
+- `insured_zip` silently corrupted in storage whenever any row in the
+  batch had a missing zip: pandas upcasts an int column to float64 the
+  instant one cell is empty, so a real zip like `468000` was stored (and
+  later PII-masked) as `468000.0`. `GET /claims/{id}` showed `'46XXXXXX'`
+  (8 characters — wrong) for the batch-scored claim vs. the correct
+  `'46XXXX'` (6 characters) for the identical zip scored via `/score`.
+  The genuinely-missing zip in that same batch fared worse: pandas'
+  float `NaN` round-tripped as the literal string `"nan"` and masked
+  into the nonsensical `'naX'` — worse than either the real masked value
+  or a clean null.
+- A malformed date string in `incident_date`/`policy_bind_date` sailed
+  straight through and fed the per-batch-median `NaT` fallback above —
+  the realistic way a typo'd or attacker-supplied batch row could
+  trigger that skew in practice, since `/score`'s schema rejects a
+  malformed date before it ever reaches `engineer_features()`.
+
+**Fix.** `_validate_zip_and_dates()` raises a 422 (same
+`{"error": ..., "columns": {col: [row indices]}}` shape PB-07's
+`_validate_numeric_columns` already established) for a *present but
+invalid* zip (non-numeric or outside `10,000-999,999`) or a *present but
+unparseable* `YYYY-MM-DD` date; an absent cell is not an error, matching
+this API's "missing means not supplied" semantics everywhere else.
+`_clean_zip_column()` then rebuilds `insured_zip` as a plain Python
+`int` (present) or `None` (absent) per cell before storage — bypassing
+pandas' automatic upcast entirely, so a batch-scored claim's
+`raw_payload` is bit-for-bit the same shape a single-claim one is.
+
+**A pre-existing bug found and fixed along the way.**
+`_validate_numeric_columns` (PB-07) decided whether a numeric cell was
+"present" via `col.astype(str)` compared against `""`/`"nan"` — which
+depends on `.astype(str)` turning a missing (`NaN`) cell into the
+literal string `"nan"`. Reproduced directly: on this project's pinned
+pandas version (3.0.2), `.astype(str)` on `NaN` leaves an actual float
+`NaN`, not the string `"nan"` — so `NaN != "nan"` evaluates `True`, and
+every genuinely-missing optional numeric cell read as "present",
+non-numeric" and 422'd. A batch CSV row with, say, an empty optional
+`total_claim_amount` was being rejected outright — a real, live
+regression, not a hypothetical, caught only because this ticket needed
+to touch the same "present" logic for the new zip/date checks and a
+direct reproduction script was run against it first. Fixed with a new
+shared `_present_mask()` helper using `col.notna()` directly — no string
+round-trip, dtype-agnostic, and not dependent on pandas' own
+version-specific stringification behavior. `pd.read_csv(...,
+na_values=[""])` (every call site in this file) already guarantees a
+genuinely-empty cell becomes real pandas `NaN`, so this is a strictly
+more correct replacement, not a behavior trade-off.
+
+`backend/app/ml/feature_engineering.py`: `POLICY_AGE_FALLBACK_DAYS`,
+`INCIDENT_YEAR_FALLBACK` added; both fallback sites switched to them.
+`backend/app/api/scoring.py`: `_present_mask()` (new, used by
+`_validate_numeric_columns`), `_validate_zip_and_dates()` (new),
+`_clean_zip_column()` (new), both new functions wired into
+`/score/batch` before scoring. `backend/tests/test_ml_core.py` (+2):
+both fallback constants checked directly against the real training
+data (same drift-guard pattern as `KNOWN_HOBBIES`); engineered features
+for a row with a malformed date verified byte-identical scored alone vs.
+batched alongside dissimilar rows.
+`backend/tests/test_client_error_handling.py` (+5): a batch row with a
+genuinely-missing optional numeric field scores 200, not 422 (the
+`_present_mask` fix); an invalid `insured_zip` and an invalid
+`incident_date` each 422 with the correct row indices; a genuinely
+*absent* zip/date is not an error; and an end-to-end test scoring the
+same zip once via `/score` and once via `/score/batch` (mixed in a batch
+with a missing zip in the other row, to specifically exercise pandas'
+whole-column upcast) confirms both mask identically to `'46XXXX'` while
+the missing zip round-trips as a real `null`, not `'naX'`.
+
+Tests: 113/113 backend (108 existing + 2 `test_ml_core.py` + 5
+`test_client_error_handling.py`), 11/11 dashboard (unaffected — no
+dashboard code touched). No retrain needed — both fallback constants
+were computed from the same training data the shipped model was already
+fit against; this fixes a scoring-time bug in how a bad/missing input is
+handled, not the model itself.
