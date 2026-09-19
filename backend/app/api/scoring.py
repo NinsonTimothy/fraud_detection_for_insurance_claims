@@ -40,7 +40,10 @@ async def score_batch(file: UploadFile, db: Session = Depends(get_db)):
     if not file.filename.endswith(".csv"):
         raise HTTPException(400, "upload a .csv file")
     raw = await file.read()
-    df = pd.read_csv(io.BytesIO(raw))
+    # SH-01: keep_default_na=False so an uploaded claim whose
+    # authorities_contacted is genuinely "None" (no authority contacted)
+    # isn't misread as missing data — see clean_data.py's module docstring.
+    df = pd.read_csv(io.BytesIO(raw), keep_default_na=False, na_values=[""])
     service = FraudScoringService.instance()
     scored = service.score_batch(df)
 

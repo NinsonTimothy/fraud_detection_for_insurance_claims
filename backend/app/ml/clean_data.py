@@ -6,12 +6,30 @@ documented treatment (01_eda.ipynb / 02_preprocessing.ipynb):
   - '?' is a missing-value sentinel used by three columns (`collision_type`,
     `property_damage`, `police_report_available`) in this dataset's own
     convention, not a real category — imputed with the mode, logged.
-  - `authorities_contacted` has 91 genuine NaN rows — imputed with the
-    mode ("Police", the dominant real-world response), logged.
   - `_c39` (an all-null trailing artifact column some re-uploads of this
     dataset carry) is dropped if present.
   - `policy_number` is dropped as a pure identifier (no predictive value,
     would leak nothing but is dead weight).
+
+SH-01 (fixed): `authorities_contacted` has 91 rows whose real value is the
+literal string "None" — meaning "no authority was contacted", a genuine
+category, same shape as "Police"/"Fire"/"Other"/"Ambulance". A previous
+version of this module read the CSV with pandas' default `read_csv`
+settings, under which "None" is one of pandas' own default NA-sentinel
+strings, so those 91 rows silently became real NaNs and were then
+mode-imputed to "Police" — fabricating "police was contacted" for 91
+claims that actually said no authority was contacted at all, and
+discarding what may be a genuine fraud signal (fraud claims disproportionately
+skip involving authorities). Fixed by reading the raw CSV with
+`keep_default_na=False, na_values=[""]` so only true empty cells are
+treated as missing; "None" now survives as its own category and flows
+through to `feature_engineering.py`'s one-hot encoding of
+`authorities_contacted` as `authorities_contacted_None` like any other
+level. With this fix, no column in the raw dataset has any genuine NaN at
+all (verified directly against `insurance_claims_raw.csv`), so the
+generic "genuine NaNs" mode-imputation loop below is now dead code for
+this dataset — kept as a safety net for a future re-upload that might
+actually contain missing cells, but it currently does nothing.
 
 Produces two audit artifacts, same as the original project:
   - data/cleaned/cleaning_log.csv        — one row per cleaning action taken
@@ -31,7 +49,12 @@ QUESTION_MARK_COLUMNS = ["collision_type", "property_damage", "police_report_ava
 
 
 def clean() -> pd.DataFrame:
-    df = pd.read_csv(RAW_PATH)
+    # SH-01: keep_default_na=False + explicit na_values=[""] so the literal
+    # string "None" in `authorities_contacted` (a genuine "no authority
+    # contacted" category) is NOT swallowed by pandas' default NA-sentinel
+    # list, which otherwise treats "None" as missing data. See module
+    # docstring.
+    df = pd.read_csv(RAW_PATH, keep_default_na=False, na_values=[""])
     log_rows = []
     plan_rows = []
 

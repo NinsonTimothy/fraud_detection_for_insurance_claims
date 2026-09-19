@@ -28,7 +28,10 @@ if not models_are_available():
 
 uploaded = st.file_uploader("Upload claims CSV", type=["csv"])
 if uploaded is not None:
-    df = pd.read_csv(uploaded)
+    # SH-01: keep_default_na=False so authorities_contacted's genuine
+    # "None" category isn't misread as missing data by pandas' default
+    # NA-sentinel list — see backend/app/ml/clean_data.py's docstring.
+    df = pd.read_csv(uploaded, keep_default_na=False, na_values=[""])
     service = get_scoring_service()
     scored = service.score_batch(df)
     result = pd.concat([df.reset_index(drop=True), scored.reset_index(drop=True)], axis=1)

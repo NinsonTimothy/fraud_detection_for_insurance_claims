@@ -2,5 +2,4 @@ action,column,sentinel,n_affected,fill_value,reason
 impute_sentinel,collision_type,?,178.0,Rear Collision,
 impute_sentinel,property_damage,?,360.0,NO,
 impute_sentinel,police_report_available,?,343.0,NO,
-impute_na,authorities_contacted,,91.0,Police,
 drop_column,policy_number,,,,"pure identifier, no predictive value"

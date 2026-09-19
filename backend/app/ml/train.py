@@ -35,7 +35,11 @@ RANDOM_STATE = 42
 
 
 def load_and_split():
-    df = pd.read_csv(DATA_CLEANED)
+    # SH-01: same keep_default_na=False rule as clean_data.py — the cleaned
+    # CSV round-trips authorities_contacted's genuine "None" category as
+    # the literal text "None", which plain read_csv() would otherwise
+    # re-swallow as NaN on the way back in.
+    df = pd.read_csv(DATA_CLEANED, keep_default_na=False, na_values=[""])
     y = (df["fraud_reported"] == "Y").astype(int)
     train_df, test_df, y_train, y_test = train_test_split(
         df, y, test_size=0.2, stratify=y, random_state=RANDOM_STATE

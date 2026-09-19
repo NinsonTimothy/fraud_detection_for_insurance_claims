@@ -167,3 +167,49 @@ CV numbers (generated from `metrics.json`, never hand-typed, per this
 project's own working rules) — the §3 table above, written against the
 PRE-PB-02 model, is left as historical record of what the leak looked
 like, not as this build's current numbers.
+
+### 7. `authorities_contacted` "None" was being read as missing data, not a real category (SH-01)
+
+`clean_data.py`'s module docstring claimed `authorities_contacted` had 91
+genuine `NaN` rows, mode-imputed to "Police". That claim was itself wrong.
+
+**Reproduction.** `data/raw/insurance_claims_raw.csv` has 91 rows whose
+`authorities_contacted` value is the literal text `None` — meaning "no
+authority was contacted", the same kind of real category as
+"Police"/"Fire"/"Other"/"Ambulance". Pandas' `read_csv()` treats the
+string `"None"` as one of its own default NA-sentinel values, so a plain
+`pd.read_csv(RAW_PATH)` silently turned those 91 genuine "None" claims
+into `NaN`. `clean_data.py`'s generic "genuine NaN -> mode impute" step
+then overwrote all 91 of them with `"Police"` — fabricating "police was
+contacted" for claims that actually said the opposite, and (since fraud
+claims may disproportionately skip involving authorities) potentially
+erasing real signal. Confirmed directly: reading the raw CSV with
+`keep_default_na=False, na_values=[""]` instead of pandas' defaults drops
+the NaN count on this column from 91 to 0, and no other column in the raw
+dataset is affected (checked column-by-column).
+
+**Fix.** `clean_data.py` now reads the raw CSV with `keep_default_na=False,
+na_values=[""]`, so only genuinely empty cells count as missing and
+`"None"` survives as its own category. Because the cleaned CSV round-trips
+that category back out as the literal text `"None"`, every other place
+that reads a raw-schema CSV needed the same fix to avoid re-introducing
+the exact same bug one step downstream: `train.py::load_and_split()`,
+`backend/tests/test_ml_core.py`'s `sample_data` fixture, the batch-scoring
+API endpoint (`api/scoring.py::score_batch`), and the dashboard's batch
+upload page (`app_pages/batch_review.py`). `authorities_contacted` was
+already in `feature_engineering.py`'s `CATEGORICAL_COLUMNS`, so no new
+code was needed to turn the now-preserved `"None"` category into an
+`authorities_contacted_None` one-hot column — it falls out of the existing
+one-hot encoding automatically. With this fix, the raw dataset has zero
+genuine `NaN` cells in any column (verified directly), so the generic
+"genuine NaNs" mode-imputation loop in `clean_data.py` is currently dead
+code for this dataset — left in as a safety net for a future re-upload
+that might contain real missing cells.
+
+**Effect on metrics.** Retrained after this fix (on top of PB-02):
+`n_features` 71 -> 72 (the new `authorities_contacted_None` column);
+holdout ROC-AUC for the shipped Random Forest moved from 0.843628
+(post-PB-02, pre-SH-01) to 0.844979 — a small, expected move since this
+only restores one genuine category on one categorical column. See
+`models/metrics.json` for the exact current numbers rather than a
+hand-typed figure here.

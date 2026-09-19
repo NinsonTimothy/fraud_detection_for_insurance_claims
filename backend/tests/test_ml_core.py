@@ -17,7 +17,13 @@ from app.ml.feature_engineering import align_to_training_columns, engineer_featu
 
 @pytest.fixture(scope="module")
 def sample_data():
-    df = pd.read_csv(Path(__file__).resolve().parents[2] / "data" / "cleaned" / "insurance_claims_cleaned.csv")
+    # SH-01: keep_default_na=False so authorities_contacted's genuine
+    # "None" category (round-tripped through CSV as literal text) isn't
+    # re-swallowed as NaN by pandas' default NA-sentinel list.
+    df = pd.read_csv(
+        Path(__file__).resolve().parents[2] / "data" / "cleaned" / "insurance_claims_cleaned.csv",
+        keep_default_na=False, na_values=[""],
+    )
     y = (df["fraud_reported"] == "Y").astype(int)
     return df, y
 
