@@ -15,7 +15,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-FP_REVIEW_COST = 250.0  # flat analyst-review-time proxy, in the dataset's own currency units
+from app.core.config import ANALYST_REVIEW_COST as FP_REVIEW_COST
+# ^ single source of truth: config.ANALYST_REVIEW_COST reads the
+# FP_REVIEW_COST env var (default 250.0, dataset's own currency units).
+# Previously this module hardcoded its own 250.0 constant, so setting
+# FP_REVIEW_COST had no effect on the actual cost sweep (PB-17).
 
 
 def sweep_thresholds(y_true: np.ndarray, y_proba: np.ndarray, claim_amounts: np.ndarray, steps: int = 50) -> pd.DataFrame:

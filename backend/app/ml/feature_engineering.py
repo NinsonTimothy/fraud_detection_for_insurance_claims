@@ -144,7 +144,6 @@ def _zip3_lookup_from_training(df: pd.DataFrame, fraud_col: pd.Series) -> pd.Dat
 def engineer_features(
     df: pd.DataFrame,
     zip3_lookup: pd.DataFrame,
-    fit_mode: bool = False,
 ) -> pd.DataFrame:
     """The single feature-engineering pipeline used by training, the live
     API, batch scoring, and the Oracle adapter. `zip3_lookup` must be the

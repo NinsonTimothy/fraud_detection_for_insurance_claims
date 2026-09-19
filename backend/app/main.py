@@ -11,14 +11,31 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api import audit, claims, feedback, ingestion, monitoring, scoring
-from app.db.session import init_db
+from app.db.models import AuditLogEntry
+from app.db.session import SessionLocal, init_db
 from app.ml.inference import FraudScoringService
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
-    FraudScoringService.instance()  # load model artifacts once, fail fast if missing
+    service = FraudScoringService.instance()  # load model artifacts once, fail fast if missing
+
+    # PB-17: model_reloaded was a documented AuditLogEntry.event_type that
+    # nothing ever emitted. Process startup — the one place a model
+    # actually gets (re)loaded into memory — is the correct place to emit
+    # it, so the audit timeline has a real record of which model version
+    # was live from what time.
+    db = SessionLocal()
+    try:
+        db.add(AuditLogEntry(
+            event_type="model_reloaded",
+            detail={"model_version": service.model_version, "operating_threshold": service.operating_threshold},
+        ))
+        db.commit()
+    finally:
+        db.close()
+
     yield
 
 

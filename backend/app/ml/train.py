@@ -47,8 +47,8 @@ def build_features(train_df, test_df, y_train):
     # zip3 lookup built ONLY from train, same convention as the original
     # project's own disclosed (not fixed) leakage — see feature_engineering.py.
     zip3_lookup = _zip3_lookup_from_training(train_df, y_train)
-    X_train = engineer_features(train_df, zip3_lookup, fit_mode=True)
-    X_test = engineer_features(test_df, zip3_lookup, fit_mode=False)
+    X_train = engineer_features(train_df, zip3_lookup)
+    X_test = engineer_features(test_df, zip3_lookup)
     X_test = X_test.reindex(columns=X_train.columns, fill_value=0)
     return X_train, X_test, zip3_lookup
 
@@ -234,7 +234,10 @@ def main():
     joblib.dump(lr_pipeline, MODELS_DIR / "logistic_regression_final.pkl")
     joblib.dump(xgb_pipeline, MODELS_DIR / "xgboost_final.pkl")
     joblib.dump(scaler, MODELS_DIR / "standard_scaler.pkl")
-    joblib.dump(explainer.explainer, MODELS_DIR / "shap_explainer.pkl")
+    # NOTE: no separate shap_explainer.pkl artifact — FraudScoringService
+    # rebuilds ClaimExplainer directly from the loaded RF pipeline at
+    # startup (see inference.py), so a saved copy would be dead weight
+    # that could silently drift from the shipped model (PB-17).
     zip3_lookup.to_csv(MODELS_DIR / "zip3_lookup.csv", index=False)
     with open(MODELS_DIR / "feature_columns.json", "w") as f:
         json.dump(feature_columns, f)
