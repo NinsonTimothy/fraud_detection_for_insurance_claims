@@ -23,9 +23,12 @@ proactively than when a panel member finds them first.
   Kept because dropping them silently would misrepresent what this build's
   shipped model actually does; flagged individually so they can be removed
   in one line.
-- **`incident_severity`'s ordinal encoding is inferred, not confirmed**
-  against an original source labeling scheme (marked `TODO-VERIFY` in
-  `feature_engineering.py`).
+- ~~`incident_severity`'s ordinal encoding is inferred, not confirmed~~ —
+  **resolved (PB-24):** confirmed directly against the original FYP
+  project's `02_preprocessing.ipynb`/`03_modelling.ipynb` source (Trivial
+  Damage < Minor Damage < Major Damage < Total Loss, via
+  `sklearn.OrdinalEncoder`). `feature_engineering.py`'s `SEVERITY_ORDINAL`
+  matches it exactly; the `TODO-VERIFY` comment has been removed.
 - **External validation (Oracle) shows the model does not generalize past
   its own training distribution** — ROC-AUC collapses from ~0.66 (internal)
   to ~0.48 (Oracle, statistically random). Root cause is quantified: ~98%

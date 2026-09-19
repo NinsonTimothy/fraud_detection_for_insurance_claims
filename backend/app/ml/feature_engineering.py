@@ -84,6 +84,12 @@ RISKY_FEATURE_COLUMNS = [
 ]
 
 HIGH_RISK_HOBBIES = {"chess", "cross-fit"}
+# PB-24: this rank order is CONFIRMED, not inferred — the original FYP
+# project's own 02_preprocessing.ipynb / 03_modelling.ipynb encode
+# incident_severity with sklearn.OrdinalEncoder using this exact table
+# (Trivial Damage < Minor Damage < Major Damage < Total Loss), verified
+# directly against that notebook's source during the Version A vs.
+# Version B comparison (see the "Version A vs Version B comparison" doc).
 SEVERITY_ORDINAL = {"Trivial Damage": 0, "Minor Damage": 1, "Major Damage": 2, "Total Loss": 3}
 
 # Columns one-hot-encoded outright (low-to-moderate cardinality).
@@ -101,6 +107,12 @@ SEVERITY_ORDINAL = {"Trivial Damage": 0, "Minor Damage": 1, "Major Damage": 2, "
 # instead of a full one-hot block. `auto_make` has no documented predictive
 # value anywhere in the critique and was never flagged as useful, so it's
 # dropped outright rather than kept for the sake of using every raw column.
+#
+# PB-24: insured_education_level is deliberately one-hot here, NOT ordinal.
+# The original FYP project ordinal-encoded it with the order JD < High
+# School < Associate < College < Masters < PhD < MD — ranking a doctoral
+# law degree below a high-school diploma is not a real ordering, so that
+# scheme wasn't carried over; one-hot makes no ordering claim at all.
 CATEGORICAL_COLUMNS = [
     "policy_state", "policy_csl", "insured_sex", "insured_education_level",
     "insured_relationship", "incident_type", "collision_type",

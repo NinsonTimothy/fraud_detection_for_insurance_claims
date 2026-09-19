@@ -90,3 +90,22 @@ streaming ingestion path (logic verified directly in Python — see
 `docs/LIMITATIONS.md` for why no live broker was tested against), and
 Docker Compose wiring all of it together. None of this changes the ML
 findings above — it's the deployment shell around them.
+
+### 5. `incident_severity` ordinal encoding — confirmed, no longer a TODO (PB-24)
+
+`ml_feature_critique.md` §"incident_severity" (written against the state of
+this rebuild at the time) flags the ordinal order Trivial Damage < Minor
+Damage < Major Damage < Total Loss as inferred, not confirmed, and
+`feature_engineering.py` carried a matching `TODO-VERIFY` comment. That's
+now resolved: the original FYP project's own `02_preprocessing.ipynb` /
+`03_modelling.ipynb` encode `incident_severity` with `sklearn.OrdinalEncoder`
+using this exact table, confirmed by reading that notebook's source
+directly. The `TODO-VERIFY` comment has been removed from
+`feature_engineering.py`; `ml_feature_critique.md` itself is left
+unedited (it's carried forward verbatim as a point-in-time critique), so
+this note is the correction of record.
+
+`insured_education_level` stayed one-hot, deliberately NOT ordinal — the
+original project's own ordinal order for it (JD < High School < ...)
+ranks a doctoral law degree below a high-school diploma, which isn't a
+real ordering worth reproducing.
