@@ -58,6 +58,13 @@ with tab2:
     st.markdown("#### Features NOT safe to treat as genuine fraud signal")
     st.markdown(
         """
+**As of SH-02/D3, both features below are excluded from the deployable model by default** — gated
+behind `INCLUDE_PROXY_FEATURES` in `app/core/config.py` (default `False`), not merely disclosed-and-kept.
+The table under "Global feature importance" reflects whichever variant this model was actually trained
+with; see `data/processed/proxy_feature_ablation.csv` for the measured performance cost of excluding
+them (a real drop in recall/ROC-AUC, disclosed rather than hidden — this project's judgment is that
+shipping an unexplained lifestyle/occupation → risk association isn't worth that gain).
+
 - **`is_highrisk_hobby`** — chess (82.6% fraud, n=46) and cross-fit (74.3%, n=35) claimants are
   fraud-flagged far more than every other hobby (17-30%) in this 1,000-row dataset. There is no plausible
   causal fraud mechanism connecting chess to insurance fraud — this reads as a small-sample artifact, and

@@ -6,11 +6,14 @@ proactively than when a panel member finds them first.
 
 ## Data & modeling
 
-- **Small training set.** 1,000 rows, ~247 fraud cases, 74 engineered
-  features after an earlier 122-feature version was found to overfit (see
-  `docs/ml_feature_critique.md` and the Model Insights page's audit tab).
-  Every metric in this project carries real uncertainty at this sample
-  size — report the 5-fold CV range, not just the point estimate.
+- **Small training set.** 1,000 rows, ~247 fraud cases; the shipped model's
+  exact feature count is in `models/metrics.json`'s `n_features` (70 with
+  the deployable default of proxy features excluded, see the bullet
+  below — was 74 when they were included, after an earlier 122-feature
+  version was found to overfit — see `docs/ml_feature_critique.md` and
+  the Model Insights page's audit tab). Every metric in this project
+  carries real uncertainty at this sample size — report the 5-fold CV
+  range, not just the point estimate.
 - ~~`zip3_risk_tier` is documented, disclosed target-encoding leakage, not
   fixed~~ — **resolved (PB-02):** it was worse than disclosed leakage. This
   dataset's `insured_zip` values are 6-digit US ZIPs, not the 5-digit form
@@ -25,9 +28,23 @@ proactively than when a panel member finds them first.
   before/after metrics.
 - **`is_highrisk_hobby` / `is_exec_occupation` are dataset artifacts, not
   demonstrated fraud signal** — see Model Insights → Feature quality audit.
-  Kept because dropping them silently would misrepresent what this build's
-  shipped model actually does; flagged individually so they can be removed
-  in one line.
+  **Resolved (SH-02 / D3):** these are no longer baked into the shipped
+  model at all. `feature_engineering.engineer_features()` gates both
+  behind `INCLUDE_PROXY_FEATURES` (`app/core/config.py`, default
+  **`False`**) — the deployable headline model genuinely never computes or
+  sees them, not merely a flag that could be removed in one line.
+  Including them is opt-in (`INCLUDE_PROXY_FEATURES=true`), e.g. to
+  reproduce the comparison below. This has a real, measured cost: RF
+  holdout ROC-AUC drops from ~0.85 (proxy features on) to ~0.79 (proxy
+  features off), and recall/F1 drop similarly — see
+  `data/processed/proxy_feature_ablation.csv` and
+  `docs/REBUILD_NOTES.md` §"SH-02" for the full before/after numbers, both
+  the single holdout split and 5-fold CV. This project's own judgment is
+  that shipping a model that leans on an unexplained lifestyle/occupation
+  → risk association — close to proxy-discrimination, the kind real
+  insurance regulators scrutinize insurers for — is not worth that
+  performance gain, so the honest, disclosed trade-off is accepted rather
+  than hidden.
 - ~~`incident_severity`'s ordinal encoding is inferred, not confirmed~~ —
   **resolved (PB-24):** confirmed directly against the original FYP
   project's `02_preprocessing.ipynb`/`03_modelling.ipynb` source (Trivial

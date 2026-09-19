@@ -124,12 +124,17 @@ through "whichever number is highest."
    learnable fraud data (fresh models reach ROC-AUC ≈0.81-0.82 on Oracle's
    own fields). This is a feature-availability problem, precisely
    quantified, not a data problem.
-3. **Two specific features are flagged as not safe to treat as real signal**
-   (`is_highrisk_hobby`/`is_exec_occupation` — dataset artifacts) and are
-   individually removable in one line each. A third, `zip3_risk_tier`, was
-   found to be worse than disclosed leakage — a near-row-unique lookup from
-   a 4-digit ZIP prefix bug, not a genuine 3-digit ZIP3 — and has been
-   removed entirely (`docs/REBUILD_NOTES.md` §"PB-02").
+3. **Two specific features were flagged as not safe to treat as real
+   signal** (`is_highrisk_hobby`/`is_exec_occupation` — dataset artifacts)
+   and, as of SH-02/D3, are excluded from the deployable model by default
+   — gated behind `INCLUDE_PROXY_FEATURES` (`app/core/config.py`), not
+   merely disclosed-and-kept. Both variants are measured and reported
+   (`data/processed/proxy_feature_ablation.csv`), and the performance
+   cost of excluding them is disclosed, not hidden (`docs/REBUILD_NOTES.md`
+   §"SH-02"). A third, `zip3_risk_tier`, was found to be worse than
+   disclosed leakage — a near-row-unique lookup from a 4-digit ZIP prefix
+   bug, not a genuine 3-digit ZIP3 — and has been removed entirely
+   (`docs/REBUILD_NOTES.md` §"PB-02").
 4. **What real SIU tooling has that this doesn't** (prior-claims history,
    fault attribution, network-link analysis) is named explicitly as an
    architectural ceiling this dataset cannot support — not glossed over.

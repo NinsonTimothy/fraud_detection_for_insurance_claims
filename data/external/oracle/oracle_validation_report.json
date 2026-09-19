@@ -1,11 +1,11 @@
 {
   "internal_holdout_metrics": {
-    "roc_auc": 0.8494391133937018,
-    "pr_auc": 0.5755361024076968
+    "roc_auc": 0.793620759562103,
+    "pr_auc": 0.5451137578931736
   },
   "oracle_metrics": {
-    "roc_auc": 0.48192852841896305,
-    "pr_auc": 0.05926093274214331,
+    "roc_auc": 0.46279011213961335,
+    "pr_auc": 0.0550687049358555,
     "recall": 0.0,
     "precision": 0.0,
     "confusion_matrix": {
@@ -14,13 +14,13 @@
       "fn": 923,
       "tp": 0
     },
-    "operating_threshold": 0.3
+    "operating_threshold": 0.44
   },
   "oracle_n_rows": 15420,
   "oracle_fraud_rate": 0.05985732814526589,
-  "n_features_total": 72,
-  "n_features_constant_on_oracle": 60,
-  "share_of_shap_weight_constant_on_oracle": 0.9442992863012696,
+  "n_features_total": 70,
+  "n_features_constant_on_oracle": 58,
+  "share_of_shap_weight_constant_on_oracle": 0.9172273070105034,
   "fields_mapped_for_real": [
     "age",
     "insured_sex",
@@ -30,5 +30,5 @@
     "number_of_vehicles_involved",
     "auto_year"
   ],
-  "generated_at": "2026-09-19T17:33:25.849439+00:00"
+  "generated_at": "2026-09-19T17:45:30.509977+00:00"
 }

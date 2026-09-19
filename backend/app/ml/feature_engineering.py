@@ -52,6 +52,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from app.core.config import INCLUDE_PROXY_FEATURES
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ARTIFACTS_DIR = PROJECT_ROOT / "models"
 
@@ -153,9 +155,21 @@ def apply_missing_defaults(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
+def engineer_features(df: pd.DataFrame, include_proxy_features: bool | None = None) -> pd.DataFrame:
     """The single feature-engineering pipeline used by training, the live
-    API, batch scoring, and the Oracle adapter."""
+    API, batch scoring, and the Oracle adapter.
+
+    SH-02 / D3: `include_proxy_features` gates `RISKY_FEATURE_COLUMNS`
+    (`is_highrisk_hobby`, `is_exec_occupation` — see module docstring for
+    why they're flagged). Defaults to `None`, which reads
+    `app.core.config.INCLUDE_PROXY_FEATURES` (itself defaulting to
+    `False` — the deployable headline model excludes them). Pass an
+    explicit `True`/`False` to build a specific variant regardless of
+    config, e.g. to compute the with/without ablation comparison in
+    `train.py` — both call sites need both variants from the same
+    function, not just whatever the process-wide config says."""
+    if include_proxy_features is None:
+        include_proxy_features = INCLUDE_PROXY_FEATURES
     df = apply_missing_defaults(df)
     out = pd.DataFrame(index=df.index)
 
@@ -206,8 +220,12 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     out["is_major_damage"] = (df["incident_severity"] == "Major Damage").astype(int)
 
     # --- Flagged-risky features (module docstring points 1 & 2) ---
-    out["is_highrisk_hobby"] = df["insured_hobbies"].isin(HIGH_RISK_HOBBIES).astype(int)
-    out["is_exec_occupation"] = (df["insured_occupation"] == "exec-managerial").astype(int)
+    # SH-02 / D3: gated behind include_proxy_features — OFF (the default)
+    # means these two columns are not built at all, not merely masked to
+    # zero, so a shipped OFF model genuinely never sees this signal.
+    if include_proxy_features:
+        out["is_highrisk_hobby"] = df["insured_hobbies"].isin(HIGH_RISK_HOBBIES).astype(int)
+        out["is_exec_occupation"] = (df["insured_occupation"] == "exec-managerial").astype(int)
 
     # PB-02: no zip3-derived feature is built anymore — see module
     # docstring. `insured_zip` stays an EDA-only raw column.

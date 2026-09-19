@@ -699,3 +699,95 @@ Tests: 60/60 backend (51 existing + 9 new), 3/3 dashboard. Retrained
 backward-compatible for the RF path (no `background_data` needed), so this
 is a no-op verification, not a required retrain; holdout ROC-AUC unchanged
 at 0.849439.
+
+### 17. Proxy features gated behind a config flag, OFF by default (SH-02 / D3)
+
+`is_highrisk_hobby`/`is_exec_occupation` (`feature_engineering.RISKY_FEATURE_COLUMNS`)
+were previously always computed and always shipped — "flagged in the docs
+and the dashboard's audit tab" was the entire mitigation. D3's decision
+default is to gate them behind a config flag instead, defaulting OFF, and
+to measure (not assert) what excluding them costs.
+
+**Fix.** `app/core/config.py` adds `INCLUDE_PROXY_FEATURES`
+(env var `INCLUDE_PROXY_FEATURES`, default `false`).
+`feature_engineering.engineer_features()` takes a new
+`include_proxy_features: bool | None = None` parameter — `None` (every
+existing call site) reads the config default; the two risky columns are
+now not built at all when off, not merely present-and-ignored. `train.py`
+threads the same parameter through `build_features()` and
+`cross_validate_model()` so both proxy-feature variants can be trained
+from the same functions the shipped pipeline itself uses (no parallel
+implementation to drift out of sync).
+
+**Both variants are measured and reported, every training run** — a new
+`run_proxy_feature_ablation()` in `train.py` trains the champion
+architecture (RF+SMOTE, identical hyperparameters) on both variants,
+reporting a single holdout comparison (threshold 0.5 for both, so the
+comparison isn't confounded by two different threshold choices — a raw
+feature-inclusion effect, not a threshold-selection effect) AND a full
+5-fold refit-per-fold CV (a 2-feature difference on a 200-row holdout
+split alone is noisy). Saved to
+`data/processed/proxy_feature_ablation.csv`; `models/metrics.json` gets a
+new `proxy_features` block recording which variant actually shipped.
+
+**The measured cost of turning them off (this training run):**
+
+| | proxy features ON (72 features) | proxy features OFF (70 features, **shipped**) |
+|---|---|---|
+| Holdout recall | 0.857 | 0.735 |
+| Holdout ROC-AUC | 0.849 | 0.794 |
+| Holdout PR-AUC | 0.576 | 0.545 |
+| Holdout F1 | 0.730 | 0.679 |
+| 5-fold CV recall (mean±SD) | 0.886±0.038 | 0.676±0.054 |
+| 5-fold CV ROC-AUC (mean±SD) | 0.857±0.031 | 0.770±0.021 |
+
+This is a real, non-trivial cost — recall (this project's own top-ranked
+metric) drops by roughly 12-21 points depending on which comparison is
+read. It is disclosed here, in `docs/LIMITATIONS.md`, and on the
+dashboard's Model Insights → Feature quality audit tab, rather than
+hidden or minimized: `feature_engineering.py`'s own module docstring
+already judged these two features "close to proxy-discrimination
+(lifestyle -> risk score) real insurance regulators scrutinize" — this
+project's own conclusion is that shipping a model that leans on an
+unexplained lifestyle/occupation -> risk association is not worth that
+performance gain, so the honest trade-off is accepted, not hidden behind
+a headline number. `INCLUDE_PROXY_FEATURES=true` remains available to
+reproduce the ON variant (e.g. for a side-by-side defense discussion).
+
+**A note on the lineage constraint.** This rebuild's own working brief set
+a lineage bar of "must not be worse than Project A" (holdout ROC-AUC
+0.860, PR-AUC 0.618, recall 0.776 @ threshold 0.55). With proxy features
+on, Aegis already met or approached that bar (ROC-AUC 0.849, recall
+0.857 at the chosen threshold). With the SH-02/D3 default now OFF, the
+shipped model's holdout numbers (ROC-AUC 0.794, PR-AUC 0.545, recall
+0.735) fall BELOW that bar on every one of those three metrics. This is
+a direct, acknowledged consequence of this ticket's own instruction (D3:
+gate proxy features, OFF by default) and is flagged here explicitly
+rather than left for a reader to notice on their own: the two constraints
+("beat Project A" and "exclude proxy-discrimination-adjacent features by
+default") are in real tension for this specific 1,000-row dataset, where
+those two features happen to carry a large, genuine share of the
+model's signal. `INCLUDE_PROXY_FEATURES=true` recovers the
+lineage-beating numbers if that trade-off is preferred; the default stays
+OFF because this rebuild reads the two constraints as being in that
+order of priority when they conflict, but this is a judgment call worth
+surfacing in a defense, not a settled fact.
+
+**Downstream consistency.** `evaluate_oracle.py`'s `engineer_features(mapped_df)`
+call (no explicit override) automatically tracks whichever variant is
+configured, so the Oracle adapter's feature set always matches
+`feature_columns.json` — no separate flag to keep in sync.
+`dashboard/app_pages/model_insights.py`'s audit tab text and
+`README.md`/`docs/LIMITATIONS.md` were updated to describe "excluded by
+default, opt-in" rather than "flagged but kept, removable in one line."
+
+`backend/tests/test_proxy_features.py` (new) locks in: the config default
+is `False`; `engineer_features()` with no override, with an explicit
+`True`, and with an explicit `False` all produce the correct column set;
+the shipped `models/feature_columns.json` genuinely excludes the risky
+columns; `metrics.json` discloses the setting; the ablation report exists
+with both variants and sane (0-1, finite) metrics for each.
+
+Tests: 68/68 backend (60 existing + 8 new), 3/3 dashboard. Retrained —
+this IS a required retrain (the shipped feature set changed from 72 to 70
+columns); see the before/after table above for the full metric impact.

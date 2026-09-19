@@ -36,6 +36,7 @@ from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
 
+from app.core.config import INCLUDE_PROXY_FEATURES
 from app.ml.cost_threshold import find_cost_optimal_threshold
 from app.ml.explainer import ClaimExplainer
 from app.ml.feature_engineering import engineer_features
@@ -60,9 +61,9 @@ def load_and_split():
     return train_df.reset_index(drop=True), test_df.reset_index(drop=True), y_train.reset_index(drop=True), y_test.reset_index(drop=True)
 
 
-def build_features(train_df, test_df, y_train):
-    X_train = engineer_features(train_df)
-    X_test = engineer_features(test_df)
+def build_features(train_df, test_df, y_train, include_proxy_features: bool | None = None):
+    X_train = engineer_features(train_df, include_proxy_features=include_proxy_features)
+    X_test = engineer_features(test_df, include_proxy_features=include_proxy_features)
     X_test = X_test.reindex(columns=X_train.columns, fill_value=0)
     return X_train, X_test
 
@@ -124,7 +125,7 @@ def evaluate(name, model, X_test, y_test, threshold=0.5):
             "confusion_matrix": {"tn": tn, "fp": fp, "fn": fn, "tp": tp}}
 
 
-def cross_validate_model(name, make_estimator, full_df: pd.DataFrame, y_all: pd.Series):
+def cross_validate_model(name, make_estimator, full_df: pd.DataFrame, y_all: pd.Series, include_proxy_features: bool | None = None):
     """Full-pipeline 5-fold CV: refits the scaler and the classifier from
     scratch on each fold's own training partition, then scores the held-out
     fold.
@@ -145,8 +146,8 @@ def cross_validate_model(name, make_estimator, full_df: pd.DataFrame, y_all: pd.
         y_tr = y_all.iloc[tr_idx].reset_index(drop=True)
         y_va = y_all.iloc[va_idx].reset_index(drop=True)
 
-        X_tr = engineer_features(tr_df)
-        X_va = engineer_features(va_df).reindex(columns=X_tr.columns, fill_value=0)
+        X_tr = engineer_features(tr_df, include_proxy_features=include_proxy_features)
+        X_va = engineer_features(va_df, include_proxy_features=include_proxy_features).reindex(columns=X_tr.columns, fill_value=0)
 
         scaler_fold = StandardScaler()
         Xtr_scaled = scaler_fold.fit_transform(X_tr)
@@ -175,6 +176,51 @@ def cross_validate_model(name, make_estimator, full_df: pd.DataFrame, y_all: pd.
         **{f"{k}_mean": float(np.mean(v)) for k, v in fold_metrics.items()},
         **{f"{k}_std": float(np.std(v)) for k, v in fold_metrics.items()},
     }
+
+
+def run_proxy_feature_ablation(train_df, test_df, y_train, y_test, full_df, y_full) -> pd.DataFrame:
+    """SH-02 / D3: report BOTH proxy-feature variants (measured, not
+    asserted) — `is_highrisk_hobby`/`is_exec_occupation` on vs. off — on
+    the champion architecture (RF+SMOTE, same hyperparameters either way).
+    `INCLUDE_PROXY_FEATURES` (app.core.config, default False) decides
+    which variant actually ships as random_forest_final.pkl; this function
+    only quantifies what the excluded variant would have changed, for the
+    record (data/processed/proxy_feature_ablation.csv,
+    docs/REBUILD_NOTES.md). Both a single holdout comparison (threshold
+    0.5 for both, so the comparison isn't confounded by two different
+    threshold choices) and a full 5-fold refit-per-fold CV are reported,
+    since a single 200-row holdout split is a noisy way to compare a
+    2-feature difference on its own."""
+    def make_rf():
+        return ImbPipeline([
+            ("smote", SMOTE(random_state=RANDOM_STATE)),
+            ("rf", RandomForestClassifier(
+                n_estimators=200, max_depth=5, max_features=0.3,
+                min_samples_leaf=2, min_samples_split=10,
+                class_weight="balanced_subsample", random_state=RANDOM_STATE,
+            )),
+        ])
+
+    rows = []
+    for variant, include in (("proxy_features_off", False), ("proxy_features_on", True)):
+        X_tr, X_te = build_features(train_df, test_df, y_train, include_proxy_features=include)
+        scaler_v = StandardScaler()
+        X_tr_scaled = pd.DataFrame(scaler_v.fit_transform(X_tr), columns=X_tr.columns, index=X_tr.index)
+        X_te_scaled = pd.DataFrame(scaler_v.transform(X_te), columns=X_tr.columns, index=X_te.index)
+        rf = make_rf()
+        rf.fit(X_tr_scaled, y_train)
+        holdout = evaluate(variant, rf, X_te_scaled, y_test, threshold=0.5)
+        cv = cross_validate_model(variant, make_rf, full_df, y_full, include_proxy_features=include)
+        rows.append({
+            "variant": variant, "include_proxy_features": include, "n_features": len(X_tr.columns),
+            "holdout_recall": holdout["recall"], "holdout_precision": holdout["precision"],
+            "holdout_f1": holdout["f1"], "holdout_pr_auc": holdout["pr_auc"], "holdout_roc_auc": holdout["roc_auc"],
+            "cv_recall_mean": cv["recall_mean"], "cv_recall_std": cv["recall_std"],
+            "cv_f1_mean": cv["f1_mean"], "cv_f1_std": cv["f1_std"],
+            "cv_pr_auc_mean": cv["pr_auc_mean"], "cv_pr_auc_std": cv["pr_auc_std"],
+            "cv_roc_auc_mean": cv["roc_auc_mean"], "cv_roc_auc_std": cv["roc_auc_std"],
+        })
+    return pd.DataFrame(rows)
 
 
 def main():
@@ -263,6 +309,11 @@ def main():
     cv_df = pd.DataFrame(cv_rows)
     cv_df.to_csv(PROCESSED_DIR / "cross_validation_results.csv", index=False)
 
+    # ---- SH-02 / D3: proxy-feature ablation — report BOTH variants
+    # regardless of which one INCLUDE_PROXY_FEATURES ships. ----
+    proxy_ablation_df = run_proxy_feature_ablation(train_df, test_df, y_train, y_test, full_df, y_full)
+    proxy_ablation_df.to_csv(PROCESSED_DIR / "proxy_feature_ablation.csv", index=False)
+
     # ---- Cost-optimal threshold search (PB-03: also from train OOF
     # probabilities + train claim amounts, never test). This is reported as
     # a DIAGNOSTIC/sensitivity-analysis number, not wired into
@@ -308,6 +359,13 @@ def main():
         "cost_optimal_threshold": {k: v for k, v in cost_result.items() if k != "sweep"},
         "n_train": len(X_train), "n_test": len(X_test),
         "n_features": len(feature_columns), "fraud_rate": float(y_train.mean()),
+        # SH-02 / D3: which variant actually shipped, and where to find
+        # the measured comparison against the other variant.
+        "proxy_features": {
+            "included_in_shipped_model": INCLUDE_PROXY_FEATURES,
+            "risky_feature_columns": ["is_highrisk_hobby", "is_exec_occupation"],
+            "ablation_report": "data/processed/proxy_feature_ablation.csv",
+        },
     }
     with open(MODELS_DIR / "metrics.json", "w") as f:
         json.dump(metrics, f, indent=2)
