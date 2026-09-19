@@ -16,7 +16,7 @@ import pandas as pd
 
 from app.core.config import MODELS_DIR
 from app.ml.explainer import ClaimExplainer
-from app.ml.feature_engineering import align_to_training_columns, engineer_features
+from app.ml.feature_engineering import RAW_FEATURE_COLUMNS, align_to_training_columns, engineer_features
 from app.ml.risk_policy import grade_for, grade_for_array, is_flagged, recommended_action
 
 MODEL_VERSION_FILE = MODELS_DIR / "metrics.json"
@@ -71,10 +71,16 @@ class FraudScoringService:
         proba = float(self.rf_pipeline.predict_proba(X_scaled)[:, 1][0])
         reasons = self.explainer.top_reasons(X_scaled, k=3, X_row_raw=X_raw)
         grade = grade_for(proba)
+        # PB-06: report which raw fields this claim did NOT supply (and
+        # therefore fell back to feature_engineering.MISSING_COLUMN_DEFAULTS
+        # for) — so a caller can tell a real-data score from a
+        # mostly-defaulted one instead of the two looking identical.
+        defaulted_fields = sorted(set(RAW_FEATURE_COLUMNS) - set(claim.keys()))
         return {
             "fraud_probability": proba, "risk_grade": grade,
             "flagged": is_flagged(proba, self.operating_threshold),
             "operating_threshold": self.operating_threshold,
             "recommended_action": recommended_action(grade),
+            "defaulted_fields": defaulted_fields,
             "top_reasons": reasons, "model_version": self.model_version,
         }

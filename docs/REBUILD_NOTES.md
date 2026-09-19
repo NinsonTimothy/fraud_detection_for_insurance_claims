@@ -410,3 +410,58 @@ verified against 20 real claims from the cleaned dataset:
 mismatches).
 
 Tests: 31/31 backend (17 existing + 14 new), 3/3 dashboard.
+
+### 13. `/score` had no real input validation (PB-06)
+
+`ClaimIn.payload` was `dict[str, Any]` — no type, range, or enum
+checking, and no rejection of unknown keys. Reproduced directly against a
+live `TestClient`, all four accepted with a silent 200:
+
+  - A typo'd key (`"aage": 35`) was silently ignored; the real `age`
+    silently fell back to its documented default (39) with no signal to
+    the caller that their field name was wrong.
+  - Garbage/out-of-range values (`age=-999`, `total_claim_amount=-50000`)
+    were silently accepted and scored as if real.
+  - A completely empty `{"payload": {}}` was silently accepted and
+    scored — a fully-default, meaningless claim, status 200.
+  - Worst: `{"age": "thirty-five"}` (wrong TYPE) was silently accepted.
+    `feature_engineering.py`'s numeric-passthrough columns run through
+    `pd.to_numeric(..., errors="coerce").fillna(0.0)`, so the unparseable
+    string silently became `age=0` — not even the documented default, a
+    different and worse silent failure than a normal missing field.
+
+**Fix.** `backend/app/api/schemas.py`'s new `ClaimPayload` model gives
+every one of `feature_engineering.RAW_FEATURE_COLUMNS` an explicit type,
+a range (`Field(ge=..., le=...)`), or an enum (`Literal[...]`, built from
+the actual distinct values in `data/cleaned/insurance_claims_cleaned.csv`
+for the genuinely closed-vocabulary columns — `policy_state`,
+`insured_sex`, `incident_severity`, etc.); `model_config =
+ConfigDict(extra="forbid")` rejects any key that isn't a real raw field
+(catching typos as a 422 instead of a silent default); a model validator
+rejects a payload with no fields set at all. Every field stays Optional —
+this project's own design (live API, batch CSV upload,
+`oracle_adapter.py`'s external adapter) depends on supplying any SUBSET
+of raw fields and letting `apply_missing_defaults()` fill the rest, so
+"required" here means "correct if present", not "every field must be
+supplied". Free-text fields the model only reduces to a single flag
+(`insured_hobbies`, `insured_occupation`) and the unused `auto_make` stay
+free strings rather than enums, since an unrecognized value there
+degrades gracefully instead of silently corrupting a numeric feature.
+
+Also added **defaulted-fields reporting**: `inference.py`'s `score_one()`
+now returns `defaulted_fields` — the raw fields this specific claim did
+NOT supply and therefore fell back to `MISSING_COLUMN_DEFAULTS` for — so
+a caller can tell a real-data-backed score from a mostly-defaulted one
+instead of the two looking identical in the response. Exposed via the
+`/score` response (`ScoreOut.defaulted_fields`).
+
+`backend/tests/test_input_validation.py` (new) locks in all four
+reproduced bugs as 422s, plus enum/date-format rejection and the
+defaulted-fields report on a genuinely partial claim. Scope: this ticket
+covers the single-claim `/score` JSON endpoint only — batch CSV upload
+(`/score/batch`) and the Kafka ingestion path are unchanged (the latter
+is slated for full removal under D1/PB-08/PB-09; validating a path about
+to be deleted would be wasted work).
+
+Tests: 39/39 backend (31 existing + 8 new), 3/3 dashboard. No retrain
+needed — this ticket only touches the API request-validation layer.

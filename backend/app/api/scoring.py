@@ -17,10 +17,19 @@ router = APIRouter(tags=["scoring"])
 
 @router.post("/score", response_model=ScoreOut)
 def score_claim(claim_in: ClaimIn, db: Session = Depends(get_db)):
+    # PB-06: claim_in.payload is now a validated ClaimPayload (typed,
+    # ranged, enum-checked, unknown keys rejected — see schemas.py) rather
+    # than an untyped dict. by_alias so capital-gains/capital-loss (not
+    # valid Python identifiers) round-trip under their real raw-schema
+    # names; exclude_none so a field the caller didn't set is genuinely
+    # ABSENT from the dict (not present-with-value-None), matching
+    # apply_missing_defaults()'s "not supplied" semantics and letting
+    # score_one() correctly report it in defaulted_fields.
+    payload_dict = claim_in.payload.model_dump(exclude_none=True, by_alias=True)
     service = FraudScoringService.instance()
-    result = service.score_one(claim_in.payload)
+    result = service.score_one(payload_dict)
 
-    claim = Claim(external_ref=claim_in.external_ref, raw_payload=claim_in.payload, ingested_via="api")
+    claim = Claim(external_ref=claim_in.external_ref, raw_payload=payload_dict, ingested_via="api")
     db.add(claim)
     db.flush()
     scored = ScoredClaim(
