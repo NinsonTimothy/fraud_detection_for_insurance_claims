@@ -38,7 +38,7 @@ if oracle_results_available():
     oracle = load_oracle_report()
     roc = oracle["oracle_metrics"]["roc_auc"]
     st.markdown(
-        f"""<div class="mg-note" style="border-color:{DANGER}55;background:{DANGER}14;">
+        f"""<div class="aeg-note" style="border-color:{DANGER}55;background:{DANGER}14;">
         <b>⚠ External validation warning — deliberately not hidden.</b><br/>
         Scored against Oracle (a real, independently-collected 15,420-row auto-insurance-fraud dataset
         this model never trained on), ROC-AUC drops to <b>{roc:.3f}</b> — statistically indistinguishable

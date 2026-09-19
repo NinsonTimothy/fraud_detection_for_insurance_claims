@@ -32,7 +32,7 @@ oracle = report["oracle_metrics"]
 roc_is_random = abs(oracle["roc_auc"] - 0.5) < 0.05
 
 st.markdown(
-    f"""<div class="mg-note" style="border-color:{DANGER if roc_is_random else WARNING}55;background:{DANGER if roc_is_random else WARNING}14;">
+    f"""<div class="aeg-note" style="border-color:{DANGER if roc_is_random else WARNING}55;background:{DANGER if roc_is_random else WARNING}14;">
     <b>{'Statistically indistinguishable from random' if roc_is_random else 'Meaningfully worse'} on Oracle.</b>
     ROC-AUC drops from {internal['roc_auc']:.3f} (internal holdout) to <b>{oracle['roc_auc']:.3f}</b> on Oracle.
     {report['n_features_constant_on_oracle']} of {report['n_features_total']} trained features
@@ -69,7 +69,7 @@ with tab2:
         st.markdown("Fresh models trained **directly on Oracle's own real fields** (not this project's model):")
         st.dataframe(stress_df, use_container_width=True, hide_index=True)
         st.markdown(
-            f"""<div class="mg-note" style="background:{SUCCESS}14;border-color:{SUCCESS}55;">
+            f"""<div class="aeg-note" style="background:{SUCCESS}14;border-color:{SUCCESS}55;">
             Oracle IS learnable fraud data — a fresh XGBoost model reaches
             ROC-AUC {stress_df.set_index('model').loc['oracle_xgb','roc_auc']:.3f} when trained on
             Oracle's own fields (Fault, PastNumberOfClaims, etc.). This confirms the collapse above is a

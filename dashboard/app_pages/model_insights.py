@@ -37,7 +37,7 @@ with tab1:
 
     zip3_share = shap_df[shap_df["feature"].str.startswith("zip3_risk_tier")]["share_of_total"].sum()
     st.markdown(
-        f"""<div class="mg-note" style="border-color:{DANGER}55;background:{DANGER}14;">
+        f"""<div class="aeg-note" style="border-color:{DANGER}55;background:{DANGER}14;">
         <b>{zip3_share:.1%} of total model weight sits on `zip3_risk_tier`</b> — a target-encoded feature
         built from the exact same 1,000 rows the model trains on (disclosed leakage, not fixed here — see
         the audit tab). This is the single biggest reason performance collapses on external data that has

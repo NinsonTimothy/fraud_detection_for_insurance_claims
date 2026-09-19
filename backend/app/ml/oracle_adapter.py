@@ -12,7 +12,10 @@ genuinely-overlapping fields for real; everything else is left OUT so
 documented, disclosed fallback constants. Nothing is invented to make the
 model look better or worse on Oracle than it actually is.
 
-Fields mapped for real (10 of 35):
+Fields mapped for real (9 of 35 — count matches the 9 `out[...] =`
+assignments in map_oracle_to_raw_schema() below; PB-21: an earlier draft
+of this docstring said "10 of 35" and counted total_claim_amount as
+mapped, which it explicitly is not — see below):
   age                        <- Age
   insured_sex                <- Sex
   policy_deductable           <- Deductible
@@ -24,13 +27,12 @@ Fields mapped for real (10 of 35):
                                   WeekOfMonthClaimed (approximate day-of-month)
   auto_year                    <- incident_date.year - AgeOfVehicle (bucketed)
   policy_bind_date              <- incident_date - Days_Policy_Claim (bucketed)
-  total_claim_amount            <- NOT available; Oracle has no claim-dollar
-                                  fields at all (see "Fields Oracle has no
-                                  equivalent for" below) — left as fallback,
-                                  which also means claim_to_premium_ratio,
-                                  vehicle_claim_pct, injury_claim_pct,
-                                  property_claim_pct all collapse to their
-                                  neutral fallback for every Oracle row.
+
+Notably NOT mapped — total_claim_amount: Oracle has no claim-dollar fields
+at all (see "Fields Oracle has no equivalent for" below), so it's left as
+fallback, which also means claim_to_premium_ratio, vehicle_claim_pct,
+injury_claim_pct, property_claim_pct all collapse to their neutral
+fallback for every Oracle row.
 
 Fields Oracle has NO equivalent for at all (left to fallback):
   months_as_customer, policy_state, policy_csl, policy_annual_premium,
@@ -38,10 +40,10 @@ Fields Oracle has NO equivalent for at all (left to fallback):
   insured_hobbies, insured_relationship, capital-gains, capital-loss,
   incident_type, collision_type, incident_severity, authorities_contacted,
   incident_state, incident_hour_of_the_day, property_damage,
-  injury_claim, property_claim, vehicle_claim, auto_make (auto_make IS
-  mappable via `Make`, but is unused by the model — see
-  feature_engineering.py's CATEGORICAL_COLUMNS note — so mapping it would
-  have zero effect and is skipped)
+  total_claim_amount, injury_claim, property_claim, vehicle_claim,
+  auto_make (auto_make IS mappable via `Make`, but is unused by the model
+  — see feature_engineering.py's CATEGORICAL_COLUMNS note — so mapping it
+  would have zero effect and is skipped)
 
 This means `zip3_risk_tier` — the single largest share of this model's SHAP
 weight (see docs/generalization_and_cv_results.md) — is CONSTANT for every

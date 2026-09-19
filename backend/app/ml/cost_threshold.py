@@ -6,9 +6,14 @@ Cost model (disclosed assumption, not independently cited — same pattern
 used in the sibling MoMo Guard project):
   - False negative: the claim's own `total_claim_amount` — real money paid
     out on a claim that should have been investigated.
-  - False positive: a flat analyst-review-time proxy (`FP_REVIEW_COST_GHS`),
-    editable — every flagged claim costs an investigator's time to clear,
-    whether or not it turns out to be fraud.
+  - False positive: a flat analyst-review-time proxy (config.ANALYST_REVIEW_COST,
+    set via the FP_REVIEW_COST env var), editable — every flagged claim costs
+    an investigator's time to clear, whether or not it turns out to be fraud.
+    (PB-21: an earlier draft of this docstring named the constant
+    `FP_REVIEW_COST_GHS`, a leftover from the sibling MoMo Guard project's
+    GHS-denominated cost model — this dataset's claim amounts are USD-style,
+    not GHS, so the suffix was dropped; the underlying dollar figure is an
+    unvalidated proxy either way, see docs/LIMITATIONS.md.)
 """
 from __future__ import annotations
 
