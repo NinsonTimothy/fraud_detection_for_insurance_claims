@@ -62,7 +62,15 @@ proactively than when a panel member finds them first.
 - **Dynamic cost threshold uses a flat, editable analyst-review-time proxy**
   (`FP_REVIEW_COST` in `backend/app/core/config.py`, default 250 currency
   units) — a disclosed modeling assumption, not independently cited, same
-  pattern as the sibling MoMo Guard project.
+  pattern as the sibling MoMo Guard project. **PB-03:** under that
+  assumption, the cost-optimal threshold search reliably lands at the very
+  bottom of the swept range ("flag nearly everyone") because this
+  dataset's mean claim amount is ~211x the flat review cost — a
+  reproduced, expected property of a pure expected-cost objective at this
+  cost ratio, not a bug. It's reported as a diagnostic/sensitivity number
+  in `models/metrics.json`, not used as the operating threshold (which is
+  chosen separately, by F1-optimal search on honest out-of-fold training
+  predictions — see `docs/REBUILD_NOTES.md` §8).
 - **Retraining loop is manual**, not automatic: export the investigator
   feedback CSV (`GET /feedback/export`), append confirmed labels to the
   training set, re-run `python -m app.ml.train`.

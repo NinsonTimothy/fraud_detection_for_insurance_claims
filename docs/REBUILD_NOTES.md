@@ -213,3 +213,58 @@ holdout ROC-AUC for the shipped Random Forest moved from 0.843628
 only restores one genuine category on one categorical column. See
 `models/metrics.json` for the exact current numbers rather than a
 hand-typed figure here.
+
+### 8. Threshold/SHAP/cost-sweep leakage from the test set, fixed (PB-03)
+
+`train.py` used to compute three different things directly from
+`X_test_scaled`/`y_test` — the same rows later used to report final
+performance: (1) the F1-optimal `operating_threshold`, via a grid search
+scored on the test set; (2) the cost-optimal threshold, via
+`find_cost_optimal_threshold()` scored on the test set with test-set claim
+amounts; (3) global SHAP importance, computed on the test set. Choosing a
+threshold BY maximizing F1 on the test set and then reporting that
+threshold's F1 ON the same test set is optimistic by construction — it
+isn't an honest estimate of how the model performs at a threshold chosen
+without having seen those rows.
+
+**Fix.** Added `_out_of_fold_proba()` to `train.py`: a 5-fold
+`StratifiedKFold` loop over the TRAINING set only, refitting a fresh
+scaler + RF estimator per fold (same refit-per-fold pattern already used
+by `cross_validate_model()`) and collecting each fold's held-out
+predictions, so every training row gets an honest probability that its
+own fold's model never trained on. `operating_threshold` and the
+cost-optimal threshold are now both chosen from these out-of-fold
+training probabilities; global SHAP importance is now computed on
+`X_train_scaled` (the data the shipped model was actually fit on,
+appropriate for describing what it learned) instead of the test set. The
+true test set (`X_test_scaled`/`y_test`) is now touched exactly once, in
+`evaluate()`, purely to report performance at a threshold chosen without
+it — model_comparison.csv, the per-model recall/precision/F1/ROC-AUC/PR-AUC
+table, is the only place test-set data flows into a number this project
+reports.
+
+**The "degenerate cost-optimal threshold" finding, explained, not
+papered over.** With this fix, the cost-optimal threshold search lands at
+**0.01 — the very bottom of the swept range** (recall 1.0, precision
+0.2475), i.e. "flag literally every claim." This is not a leftover bug in
+the sweep: this dataset's mean `total_claim_amount` (~$52,762) is ~211x
+the flat false-positive review cost (`ANALYST_REVIEW_COST`, default
+$250), so under a pure expected-cost objective, missing one extra real
+fraud case is almost always worse than reviewing ~211 extra false alarms
+— a naive cost-minimizing search will rationally push toward
+near-universal flagging under that ratio, regardless of how honestly the
+threshold is chosen. It is reported in `models/metrics.json` as a
+diagnostic/sensitivity-analysis number (see `cost_threshold.py`'s module
+docstring) precisely because it isn't a usable operating point on its
+own — an investigator team cannot review "nearly every claim." The number
+actually used to flag claims (`operating_threshold`) continues to be the
+F1-optimal one.
+
+**Effect on metrics.** Retrained after this fix (on top of PB-02/SH-01).
+`operating_threshold` came out identical (0.30) to the pre-fix, leaky
+version — the F1-optimal point turned out to be robust to whether it was
+chosen from the test set or from honest out-of-fold training data, so the
+model_comparison numbers are unchanged from §7's. What changed is the
+METHODOLOGY, not (in this instance) the resulting number — but the
+process is now honest regardless of whether a future retrain or
+hyperparameter change happens to move that agreement.

@@ -14,6 +14,20 @@ used in the sibling MoMo Guard project):
     GHS-denominated cost model — this dataset's claim amounts are USD-style,
     not GHS, so the suffix was dropped; the underlying dollar figure is an
     unvalidated proxy either way, see docs/LIMITATIONS.md.)
+
+PB-03 note: this dataset's mean `total_claim_amount` is ~$52,762 against a
+default `ANALYST_REVIEW_COST` of $250 — roughly a 211x ratio. Under a pure
+expected-cost objective, missing even one extra real fraud case almost
+always costs more than reviewing ~211 extra false alarms, so
+`find_cost_optimal_threshold()` reliably lands very close to the bottom of
+the swept range (near-universal flagging) rather than some interior
+tradeoff point. This is the correct, reproducible output of the disclosed
+cost model, not a bug in the sweep — but it also means the result isn't a
+useful OPERATING threshold on its own (an analyst team cannot review
+"nearly every claim"). `train.py` reports it as a diagnostic/
+sensitivity-analysis number alongside the model comparison; the actual
+`operating_threshold` used to flag claims is chosen separately, by
+F1-optimal search (see `train.py`'s `_f1_optimal_threshold()`).
 """
 from __future__ import annotations
 

@@ -3,6 +3,19 @@ train.py — trains the three compared models (Random Forest+SMOTE is what
 gets shipped; Logistic Regression and XGBoost are compared alternatives,
 same as the original FYP), saves every artifact the API/dashboard read.
 
+PB-03 (fixed): the operating threshold, the cost-optimal threshold, and
+the global SHAP importance used to all be computed directly from
+`X_test_scaled`/`y_test` — the same rows `evaluate()` then reports final
+performance numbers against. That's leakage: picking the threshold that
+maximizes F1 ON the test set and then reporting that threshold's F1 ON
+the same test set is optimistic by construction, not an honest estimate
+of how the model would perform at a threshold chosen without having seen
+those rows. Fixed by choosing every threshold (and computing SHAP) from
+honest out-of-fold predictions on the TRAINING set only (see
+`_out_of_fold_proba()` below) — the true test set (`X_test_scaled`/
+`y_test`) is now touched exactly once, in `evaluate()`, purely to REPORT
+performance at a threshold that was chosen without it.
+
 Run: python -m app.ml.train   (from backend/)
 """
 from __future__ import annotations
@@ -52,6 +65,45 @@ def build_features(train_df, test_df, y_train):
     X_test = engineer_features(test_df)
     X_test = X_test.reindex(columns=X_train.columns, fill_value=0)
     return X_train, X_test
+
+
+def _out_of_fold_proba(make_estimator, X: pd.DataFrame, y: pd.Series, n_splits: int = 5) -> np.ndarray:
+    """PB-03: honest out-of-fold predicted probabilities for every row in
+    `X`/`y`, refitting a FRESH scaler + estimator on each fold's own
+    training partition and predicting only on that fold's held-out rows —
+    the true test set is never involved. Used to choose the operating
+    threshold, the cost-optimal threshold, and (via the RF factory) to
+    compute SHAP importance, all without letting the test set influence
+    any of those choices. Same refit-per-fold pattern as
+    `cross_validate_model()`, just returning row-level probabilities
+    instead of aggregated fold metrics."""
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_STATE)
+    oof = np.zeros(len(X))
+    for tr_idx, va_idx in skf.split(X, y):
+        X_tr, X_va = X.iloc[tr_idx], X.iloc[va_idx]
+        y_tr = y.iloc[tr_idx]
+        scaler_fold = StandardScaler()
+        Xtr_scaled = scaler_fold.fit_transform(X_tr)
+        Xva_scaled = scaler_fold.transform(X_va)
+        estimator = make_estimator()
+        estimator.fit(Xtr_scaled, y_tr)
+        oof[va_idx] = estimator.predict_proba(Xva_scaled)[:, 1]
+    return oof
+
+
+def _f1_optimal_threshold(y_true: np.ndarray, proba: np.ndarray, grid: np.ndarray) -> float:
+    best_t, best_f1 = 0.5, -1.0
+    for t in grid:
+        pred = (proba >= t).astype(int)
+        tp = ((pred == 1) & (y_true == 1)).sum()
+        fp = ((pred == 1) & (y_true == 0)).sum()
+        fn = ((pred == 0) & (y_true == 1)).sum()
+        prec = tp / max(1, tp + fp)
+        rec = tp / max(1, tp + fn)
+        f1 = 2 * prec * rec / max(1e-9, prec + rec)
+        if f1 > best_f1:
+            best_f1, best_t = f1, t
+    return round(float(best_t), 2)
 
 
 def evaluate(name, model, X_test, y_test, threshold=0.5):
@@ -168,30 +220,6 @@ def main():
 
     models = {"random_forest": rf_pipeline, "logistic_regression": lr_pipeline, "xgboost": xgb_pipeline}
 
-    # Threshold: for RF, search on ROC-derived precision/recall to land
-    # near the original project's own 0.55 operating point (recall-leaning,
-    # since missing fraud is costlier than a false alarm here).
-    rf_proba_test = rf_pipeline.predict_proba(X_test_scaled)[:, 1]
-    thresholds_grid = np.linspace(0.3, 0.8, 51)
-    best_t, best_f1 = 0.5, -1
-    for t in thresholds_grid:
-        pred = (rf_proba_test >= t).astype(int)
-        tp = ((pred == 1) & (y_test == 1)).sum()
-        fp = ((pred == 1) & (y_test == 0)).sum()
-        fn = ((pred == 0) & (y_test == 1)).sum()
-        prec = tp / max(1, tp + fp)
-        rec = tp / max(1, tp + fn)
-        f1 = 2 * prec * rec / max(1e-9, prec + rec)
-        if f1 > best_f1:
-            best_f1, best_t = f1, t
-    operating_threshold = round(float(best_t), 2)
-
-    comparison_rows = [evaluate(name, m, X_test_scaled, y_test, threshold=0.5 if name != "random_forest" else operating_threshold) for name, m in models.items()]
-    model_comparison = pd.DataFrame(comparison_rows)
-    model_comparison.to_csv(PROCESSED_DIR / "model_comparison.csv", index=False)
-
-    full_df = pd.concat([train_df, test_df], ignore_index=True)
-    y_full = pd.concat([y_train, y_test], ignore_index=True)
     estimator_factories = {
         "random_forest": lambda: ImbPipeline([
             ("smote", SMOTE(random_state=RANDOM_STATE)),
@@ -210,19 +238,53 @@ def main():
                                    random_state=RANDOM_STATE)),
         ]),
     }
+
+    # ---- PB-03: choose the operating threshold from honest out-of-fold
+    # probabilities on TRAINING data only — never from X_test_scaled/y_test,
+    # which is reserved for final reporting below. Grid matches the
+    # original project's own ~0.55 operating point (recall-leaning, since
+    # missing fraud is costlier than a false alarm here).
+    rf_oof_proba_train = _out_of_fold_proba(estimator_factories["random_forest"], X_train, y_train)
+    thresholds_grid = np.linspace(0.3, 0.8, 51)
+    operating_threshold = _f1_optimal_threshold(y_train.values, rf_oof_proba_train, thresholds_grid)
+
+    # rf_proba_test is used ONLY to report final performance at the
+    # already-chosen operating_threshold (evaluate() below) and for the
+    # monitoring page's risk_scores_test.csv — never to choose anything.
+    rf_proba_test = rf_pipeline.predict_proba(X_test_scaled)[:, 1]
+
+    comparison_rows = [evaluate(name, m, X_test_scaled, y_test, threshold=0.5 if name != "random_forest" else operating_threshold) for name, m in models.items()]
+    model_comparison = pd.DataFrame(comparison_rows)
+    model_comparison.to_csv(PROCESSED_DIR / "model_comparison.csv", index=False)
+
+    full_df = pd.concat([train_df, test_df], ignore_index=True)
+    y_full = pd.concat([y_train, y_test], ignore_index=True)
     cv_rows = [cross_validate_model(name, factory, full_df, y_full) for name, factory in estimator_factories.items()]
     cv_df = pd.DataFrame(cv_rows)
     cv_df.to_csv(PROCESSED_DIR / "cross_validation_results.csv", index=False)
 
-    # ---- Cost-optimal threshold search (uses RF, the shipped model) ----
-    claim_amounts_test = test_df["total_claim_amount"].values
-    cost_result = find_cost_optimal_threshold(y_test.values, rf_proba_test, claim_amounts_test, steps=50)
+    # ---- Cost-optimal threshold search (PB-03: also from train OOF
+    # probabilities + train claim amounts, never test). This is reported as
+    # a DIAGNOSTIC/sensitivity-analysis number, not wired into
+    # operating_threshold (which stays F1-optimal, see cost_threshold.py's
+    # module docstring for why: this dataset's mean claim amount is ~211x
+    # the flat false-positive review cost, so a pure expected-cost
+    # threshold trivially trends toward flagging nearly everyone — a
+    # documented, reproduced property of the disclosed cost assumption,
+    # not a bug in the sweep). ----
+    claim_amounts_train = train_df["total_claim_amount"].values
+    cost_result = find_cost_optimal_threshold(y_train.values, rf_oof_proba_train, claim_amounts_train, steps=50)
     cost_result["sweep"].to_csv(PROCESSED_DIR / "cost_threshold_sweep.csv", index=False)
 
-    # ---- SHAP global importance on the shipped model ----
+    # ---- SHAP global importance on the shipped model (PB-03: computed on
+    # X_train_scaled — the data the shipped rf_pipeline was actually fit
+    # on — not X_test_scaled. This is describing what the shipped model
+    # learned to use, not a generalization claim, so training data is the
+    # right input; reusing the test set here was needlessly spending it on
+    # something other than final reporting.) ----
     rf_only = rf_pipeline.named_steps["rf"]
     explainer = ClaimExplainer(rf_only, feature_columns)
-    shap_importance = explainer.global_importance(X_test_scaled)
+    shap_importance = explainer.global_importance(X_train_scaled)
     shap_importance["share_of_total"] = shap_importance["mean_abs_shap"] / shap_importance["mean_abs_shap"].sum()
     shap_importance.to_csv(PROCESSED_DIR / "shap_feature_importance.csv", index=False)
 
