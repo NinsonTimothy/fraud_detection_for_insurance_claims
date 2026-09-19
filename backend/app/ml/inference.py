@@ -17,6 +17,7 @@ import pandas as pd
 from app.core.config import MODELS_DIR
 from app.ml.explainer import ClaimExplainer
 from app.ml.feature_engineering import align_to_training_columns, engineer_features
+from app.ml.risk_policy import grade_for, grade_for_array, is_flagged, recommended_action
 
 MODEL_VERSION_FILE = MODELS_DIR / "metrics.json"
 
@@ -52,11 +53,16 @@ class FraudScoringService:
     def score_batch(self, claims: pd.DataFrame) -> pd.DataFrame:
         X_scaled = self._prepare(claims)
         proba = self.rf_pipeline.predict_proba(X_scaled)[:, 1]
-        flagged = proba >= self.operating_threshold
-        grade = pd.cut(proba, bins=[-0.01, 0.3, 0.6, 1.01], labels=["Low", "Medium", "High"])
+        # PB-04: grade_for_array() and score_one()'s grade_for() are the
+        # SAME function's vectorized/scalar forms (risk_policy.py) — they
+        # can no longer disagree at the band edges the way the old
+        # pd.cut()-vs-hand-written-if/elif pair did.
+        grade = grade_for_array(proba)
+        flagged = is_flagged(proba, self.operating_threshold)
         return pd.DataFrame({
-            "fraud_probability": proba, "risk_grade": grade.astype(str),
+            "fraud_probability": proba, "risk_grade": grade,
             "flagged": flagged, "operating_threshold": self.operating_threshold,
+            "recommended_action": [recommended_action(g) for g in grade],
         }, index=claims.index)
 
     def score_one(self, claim: dict) -> dict:
@@ -64,10 +70,11 @@ class FraudScoringService:
         X_scaled, X_raw = self._prepare(claim_df, return_raw=True)
         proba = float(self.rf_pipeline.predict_proba(X_scaled)[:, 1][0])
         reasons = self.explainer.top_reasons(X_scaled, k=3, X_row_raw=X_raw)
-        grade = "High" if proba >= 0.6 else "Medium" if proba >= 0.3 else "Low"
+        grade = grade_for(proba)
         return {
             "fraud_probability": proba, "risk_grade": grade,
-            "flagged": proba >= self.operating_threshold,
+            "flagged": is_flagged(proba, self.operating_threshold),
             "operating_threshold": self.operating_threshold,
+            "recommended_action": recommended_action(grade),
             "top_reasons": reasons, "model_version": self.model_version,
         }

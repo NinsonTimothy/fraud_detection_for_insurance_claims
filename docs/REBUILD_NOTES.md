@@ -372,3 +372,41 @@ the scenario D4 anticipated: the default (LR) is overridden because this
 project's own measured, paired nested-CV evidence — read through this
 project's own stated metric priorities, not a generic "highest ROC-AUC
 wins" rule — disagrees with it.
+
+### 12. Risk policy (score -> band -> flag -> action) unified into one module (PB-04)
+
+`inference.py`'s `score_batch()` and `score_one()` each independently
+computed the Low/Medium/High risk band from the fraud probability —
+`score_batch()` via `pd.cut(proba, bins=[-0.01, 0.3, 0.6, 1.01])`,
+`score_one()` via a hand-written `"High" if p >= 0.6 else "Medium" if p
+>= 0.3 else "Low"`. Reproduced directly: `pd.cut`'s default bins are
+right-inclusive (`(a, b]`), so `proba == 0.30` lands in the FIRST bin
+("Low"); the hand-written version's `>=` puts `0.30` in "Medium" instead.
+Same disagreement at `proba == 0.60` ("Medium" vs. "High"). The SAME
+claim, scored through batch upload vs. the single-claim form/API, could
+get a different risk_grade purely from which code path it went through.
+
+**Fix.** Added `backend/app/ml/risk_policy.py`: one module owning the
+band edges (`MEDIUM_RISK_EDGE = 0.3`, `HIGH_RISK_EDGE = 0.6`), a scalar
+`grade_for()`, an array `grade_for_array()` that uses the exact same
+`>=` comparisons (not `pd.cut`) so it cannot disagree with the scalar
+version, `is_flagged()` (the separate flag/no-flag decision, driven by
+`operating_threshold`, not the band edges), and `recommended_action()` (a
+plain-language next step per band: Low -> auto-approved, Medium ->
+standard review queue, High -> priority SIU escalation — new, not
+persisted to the database, computed fresh wherever it's displayed).
+`inference.py`'s `score_batch()`/`score_one()` both now call into this
+one module; `recommended_action` was added to the `/score` API response
+(`ScoreOut` schema) and to the Score-a-claim dashboard page.
+
+Regression test: `backend/tests/test_risk_policy.py` — parametrized over
+values straddling both band edges (`nextafter` on each side), confirms
+`grade_for()` and `grade_for_array()` now always agree, confirms the
+documented boundary semantics, and confirms `is_flagged()` stays decoupled
+from the band edges (an operating threshold below `MEDIUM_RISK_EDGE` can
+flag some "Low"-banded claims — that's intentional, not a bug). Manually
+verified against 20 real claims from the cleaned dataset:
+`score_batch()`/`score_one()` risk_grade now agrees on every row (0
+mismatches).
+
+Tests: 31/31 backend (17 existing + 14 new), 3/3 dashboard.

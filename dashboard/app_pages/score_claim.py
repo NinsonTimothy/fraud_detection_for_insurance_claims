@@ -69,6 +69,7 @@ if submitted:
         st.markdown(f"### {result['fraud_probability']:.1%} fraud probability")
         st.markdown(risk_badge(result["risk_grade"]), unsafe_allow_html=True)
         st.caption(f"Flagged: {'Yes' if result['flagged'] else 'No'} (threshold {result['operating_threshold']:.2f})")
+        st.caption(f"Recommended action: {result['recommended_action']}")
     with c2:
         st.markdown("**Top reasons (SHAP)**")
         for r in result["top_reasons"]:

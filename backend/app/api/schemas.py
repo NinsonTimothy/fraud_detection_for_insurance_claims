@@ -24,6 +24,7 @@ class ScoreOut(BaseModel):
     risk_grade: str
     flagged: bool
     operating_threshold: float
+    recommended_action: str
     top_reasons: list[ReasonCode] = []
     model_version: str
 
@@ -40,3 +41,4 @@ class BatchScoreRow(BaseModel):
     fraud_probability: float
     risk_grade: str
     flagged: bool
+    recommended_action: str
