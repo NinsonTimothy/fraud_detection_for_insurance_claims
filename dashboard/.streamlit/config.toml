@@ -1,0 +1,25 @@
+# Pins Streamlit's own chrome (header bar, sidebar nav, "Deploy"/kebab
+# toolbar, widgets) to the same dark-glassmorphism palette
+# components/theme.py's inject_css() uses for the page body.
+#
+# Without this file, Streamlit has no explicit theme, so it auto-follows
+# the browser/OS's prefers-color-scheme for its OWN chrome while
+# inject_css() unconditionally forces the page body dark — so a visitor
+# whose browser prefers light mode got Streamlit's light-mode header and
+# near-black widget text rendered on top of the custom dark background:
+# barely-legible near-white-on-white in the header, low-contrast
+# dark-on-dark everywhere else. Pinning [theme] here removes that
+# mismatch regardless of the visitor's own light/dark setting.
+[theme]
+base = "dark"
+primaryColor = "#7c9cff"
+backgroundColor = "#0b0f19"
+secondaryBackgroundColor = "#0d1220"
+textColor = "#e6e8ef"
+borderColor = "rgba(255,255,255,0.10)"
+
+# Hides the "Deploy" button (a Streamlit Community Cloud prompt with no
+# relevance to this project) while keeping the rest of the "..." menu
+# (Settings, About, Print, record a screencast) available.
+[client]
+toolbarMode = "viewer"
