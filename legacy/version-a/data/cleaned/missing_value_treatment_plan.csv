@@ -1,0 +1,4 @@
+column,decision
+collision_type,"KEEP as informative missing — business logic. Missing only when incident_type is Vehicle Theft / Parked Car, where a collision_type genuinely does not apply. Will be encoded as its own ""Not Applicable"" category in Section 4, not imputed."
+property_damage,IMPUTE with mode. Missingness shows no significant fraud-rate difference (see diff values printed above) — safe to fill with the most frequent category rather than drop or flag.
+police_report_available,"IMPUTE with mode. Same reasoning as property_damage — missingness is not informative of fraud, so mode imputation introduces minimal bias."

@@ -1,0 +1,66 @@
+{
+  "internal_holdout_metrics": {
+    "roc_auc": 0.793620759562103,
+    "pr_auc": 0.5451137578931736
+  },
+  "oracle_metrics": {
+    "roc_auc": 0.46279011213961335,
+    "pr_auc": 0.0550687049358555,
+    "recall": 0.0,
+    "precision": 0.0,
+    "confusion_matrix": {
+      "tn": 14497,
+      "fp": 0,
+      "fn": 923,
+      "tp": 0
+    },
+    "operating_threshold": 0.44
+  },
+  "oracle_metrics_ci": {
+    "roc_auc": {
+      "ci_lower": 0.4429701324972042,
+      "ci_upper": 0.4809453155241863,
+      "n_boot_effective": 1000
+    },
+    "pr_auc": {
+      "ci_lower": 0.051319653525879035,
+      "ci_upper": 0.05951332406783467,
+      "n_boot_effective": 1000
+    },
+    "recall": {
+      "ci_lower": 0.0,
+      "ci_upper": 0.0,
+      "n_boot_effective": 1000
+    },
+    "precision": {
+      "ci_lower": 0.0,
+      "ci_upper": 0.0,
+      "n_boot_effective": 1000
+    },
+    "f1": {
+      "ci_lower": 0.0,
+      "ci_upper": 0.0,
+      "n_boot_effective": 1000
+    },
+    "accuracy": {
+      "ci_lower": 0.9361851491569391,
+      "ci_upper": 0.943579766536965,
+      "n_boot_effective": 1000
+    }
+  },
+  "oracle_n_rows": 15420,
+  "oracle_fraud_rate": 0.05985732814526589,
+  "n_features_total": 70,
+  "n_features_constant_on_oracle": 58,
+  "share_of_shap_weight_constant_on_oracle": 0.9172273070105034,
+  "fields_mapped_for_real": [
+    "age",
+    "insured_sex",
+    "policy_deductable",
+    "police_report_available",
+    "witnesses",
+    "number_of_vehicles_involved",
+    "auto_year"
+  ],
+  "generated_at": "2026-09-19T17:49:09.032623+00:00"
+}

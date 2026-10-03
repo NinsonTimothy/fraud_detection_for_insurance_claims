@@ -1,0 +1,111 @@
+# PB-08/PB-09 (D1): the `kafka` service (and the `api` service's
+# KAFKA_BOOTSTRAP_SERVERS env var) has been removed entirely — the Kafka
+# ingestion path itself is gone from the codebase (see
+# docs/REBUILD_NOTES.md). Claims enter via the `api` service's /score and
+# /score/batch endpoints.
+#
+# PB-13 (D2 — SQLite default DB, Postgres optional): `backend/app/core/config.py`'s
+# DATABASE_URL already defaults to a local SQLite file the moment nothing
+# overrides it — true for the no-Docker quickstart (README) and for
+# `pytest`. Postgres exists in THIS file because it's the reference
+# "production-like" datastore for `docker compose up`, not because
+# anything in the DB access layer (`db/session.py`, `db/persistence.py`)
+# hard-requires it — a bare `docker run` of either image with no
+# DATABASE_URL set falls straight back to SQLite. See `docs/LIMITATIONS.md`.
+#
+# Postgres credentials are one value each (POSTGRES_USER/PASSWORD/DB),
+# read from your shell or a `.env` file (see `.env.example`) with the
+# same insecure-but-visible defaults the compose file always had, and
+# every service's DATABASE_URL is built FROM those same three variables
+# instead of hardcoding "postgresql://aegis:aegis@postgres/aegis" in four
+# separate places that used to have to be kept in sync by hand.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aegis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aegis}
+      POSTGRES_DB: ${POSTGRES_DB:-aegis}
+    # PB-13: no `ports:` mapping — the api/dashboard/train-init services
+    # reach this over the compose-internal network by service name
+    # (`postgres`), which is all any of them need. Publishing 5432 to the
+    # host gained nothing for this topology and needlessly exposed a DB
+    # with the default aegis/aegis credentials to whatever network the
+    # host is on. Need a GUI client against it locally? Run
+    # `docker compose port postgres 5432` or add the mapping back
+    # yourself — don't ship it exposed by default.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aegis}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # PB-13: train-init runs clean_data.py / train.py / evaluate_oracle.py —
+  # none of the three ever open a DB connection (grepped: zero references
+  # to db/DATABASE_URL/SessionLocal/get_db across all three modules).
+  # It used to carry a DATABASE_URL env var it never read and
+  # `depends_on: postgres: condition: service_healthy`, forcing training
+  # to wait on Postgres's healthcheck — and to fail outright if Postgres
+  # failed to start — for a step with nothing to do with the database.
+  # Neither is here anymore: train-init only needs its own image built
+  # and the two volumes it writes into.
+  train-init:
+    build:
+      context: .
+      dockerfile: deployment/Dockerfile.backend
+    entrypoint: ["sh", "/srv/deployment/entrypoint-train.sh"]
+    volumes:
+      - ./deployment:/srv/deployment
+      - model-data:/srv/models
+      - processed-data:/srv/data/processed
+
+  api:
+    build:
+      context: .
+      dockerfile: deployment/Dockerfile.backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - model-data:/srv/models
+      - processed-data:/srv/data/processed
+    environment:
+      # PB-13: override DATABASE_URL directly (e.g. to a sqlite:/// path)
+      # to skip Postgres entirely; otherwise built from the same
+      # POSTGRES_USER/PASSWORD/DB this compose file's `postgres` service
+      # uses, so the two can never drift apart.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-aegis}:${POSTGRES_PASSWORD:-aegis}@postgres/${POSTGRES_DB:-aegis}}
+      # PB-11: set AEGIS_API_KEY in your shell or a .env file before
+      # `docker compose up` for a real deployment — this falls back to
+      # config.py's own documented, obviously-insecure placeholder
+      # otherwise (intentional: makes "nobody set a real key" visible
+      # rather than silently working with a default that LOOKS secure).
+      AEGIS_API_KEY: ${AEGIS_API_KEY:-CHANGE-ME-insecure-default-api-key}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      train-init:
+        condition: service_completed_successfully
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: deployment/Dockerfile.dashboard
+    ports:
+      - "8501:8501"
+    volumes:
+      - model-data:/srv/models
+      - processed-data:/srv/data/processed
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-aegis}:${POSTGRES_PASSWORD:-aegis}@postgres/${POSTGRES_DB:-aegis}}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      train-init:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
+  model-data:
+  processed-data:
