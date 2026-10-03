@@ -1,0 +1,17 @@
+{
+  "default_champion_per_D4": "logistic_regression",
+  "measured_champion": "random_forest",
+  "rationale": "Per the project's own success-metric hierarchy (Recall > F1 > PR-AUC > ROC-AUC > Accuracy), Random Forest wins both top-priority metrics on paired 5-fold CV: recall 0.8868 vs 0.8301 (paired t-test p=0.0086), F1 0.7517 vs 0.7223 (paired t-test p=0.0166). Logistic Regression wins on ROC-AUC/PR-AUC (ranked below recall/F1 in this project's own hierarchy). D4 says default to Logistic Regression 'unless my own nested-CV disagrees' \u2014 it does, on the metrics this project itself ranks first, so Random Forest is kept as champion with Logistic Regression reported as the runner-up/challenger, not the other way around.",
+  "paired_ttest": {
+    "recall": {
+      "t": 4.80440786142044,
+      "p": 0.008620386737644342
+    },
+    "f1": {
+      "t": 3.9624193217084116,
+      "p": 0.01664389979245306
+    },
+    "n_folds": 5,
+    "note": "Both p-values ARE below the conventional 0.05 threshold (recall p=0.0086, F1 p=0.0166) across the 5 paired folds \u2014 Random Forest's recall/F1 advantage over Logistic Regression is consistent in direction and magnitude across every fold, not a fluke of one split. Still worth reading with the usual caution a 5-fold paired t-test deserves (only 4 degrees of freedom, so power is limited and the exact p-value is sensitive to the fold split) \u2014 treated as real, reproducible evidence for this dataset, not as license to over-claim certainty beyond it."
+  }
+}

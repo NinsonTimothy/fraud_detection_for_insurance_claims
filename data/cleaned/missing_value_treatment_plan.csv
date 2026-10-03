@@ -1,0 +1,4 @@
+column,missing_marker,n_missing,strategy,rationale
+collision_type,?,178,mode imputation,"categorical field; '?' is this dataset's own missing-value sentinel, not a real level"
+property_damage,?,360,mode imputation,"categorical field; '?' is this dataset's own missing-value sentinel, not a real level"
+police_report_available,?,343,mode imputation,"categorical field; '?' is this dataset's own missing-value sentinel, not a real level"

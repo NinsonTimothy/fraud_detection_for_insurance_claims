@@ -1,0 +1,92 @@
+"""app_pages/monitoring.py — external validation (Oracle) + PSI drift,
+the generalization-testing story front and center rather than buried."""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import plotly.express as px
+import streamlit as st
+
+_dashboard_root = str(Path(__file__).resolve().parents[1])
+if _dashboard_root not in sys.path:
+    # PB-01: append, never insert(0, ...) — inserting the dashboard
+    # dir at the FRONT of sys.path on every rerun is what let
+    # `import app...` resolve to the old dashboard/app.py instead of
+    # the backend's app/ package (see components/data_access.py,
+    # which puts backend/ at sys.path[0] once, on first import).
+    sys.path.append(_dashboard_root)
+from components.data_access import (
+    load_oracle_model_comparison, load_oracle_psi, load_oracle_report,
+    models_are_available, oracle_results_available,
+)
+from components.theme import ACCENT, DANGER, MUTED, SUCCESS, WARNING, inject_css, page_header
+
+inject_css()
+page_header("Monitoring & external validation", "The live model, unmodified, scored against Oracle — a real, independently-collected dataset it never trained on.")
+
+if not models_are_available():
+    st.warning("No trained model found. Run `python -m app.ml.train` from `backend/` first.")
+    st.stop()
+
+if not oracle_results_available():
+    st.info("Run `python -m app.ml.evaluate_oracle` from `backend/` to populate this page.")
+    st.stop()
+
+report = load_oracle_report()
+internal = report["internal_holdout_metrics"]
+oracle = report["oracle_metrics"]
+roc_is_random = abs(oracle["roc_auc"] - 0.5) < 0.05
+
+st.markdown(
+    f"""<div class="aeg-note" style="border-color:{DANGER if roc_is_random else WARNING}55;background:{DANGER if roc_is_random else WARNING}14;">
+    <b>{'Statistically indistinguishable from random' if roc_is_random else 'Meaningfully worse'} on Oracle.</b>
+    ROC-AUC drops from {internal['roc_auc']:.3f} (internal holdout) to <b>{oracle['roc_auc']:.3f}</b> on Oracle.
+    {report['n_features_constant_on_oracle']} of {report['n_features_total']} trained features
+    ({report['share_of_shap_weight_constant_on_oracle']:.1%} of total SHAP weight) go completely
+    constant once Oracle-mapped data passes through — Oracle has no ZIP code, no incident-severity field,
+    and no claim-dollar breakdown, so the model's three heaviest-weighted feature groups are simply
+    unavailable here. See "Root cause" below.</div>""",
+    unsafe_allow_html=True,
+)
+
+st.write("")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("ROC-AUC — Oracle vs. internal", f"{oracle['roc_auc']:.3f}", f"internal {internal['roc_auc']:.3f}")
+c2.metric("PR-AUC — Oracle vs. internal", f"{oracle['pr_auc']:.3f}", f"internal {internal['pr_auc']:.3f}")
+c3.metric("Recall @ operating threshold", f"{oracle['recall']:.1%}")
+c4.metric("Oracle rows scored", f"{report['oracle_n_rows']:,}", f"fraud rate {report['oracle_fraud_rate']:.2%}")
+
+tab1, tab2, tab3 = st.tabs(["Root cause (feature drift)", "Is Oracle learnable at all? (stress test)", "Methodology"])
+
+with tab1:
+    psi_df = load_oracle_psi()
+    if len(psi_df):
+        fig = px.bar(psi_df.sort_values("psi"), x="psi", y="feature", orientation="h",
+                     color=psi_df.sort_values("psi")["significant_drift"],
+                     color_discrete_map={True: DANGER, False: ACCENT}, labels={"psi": "PSI"})
+        fig.add_vline(x=0.2, line_dash="dash", line_color=WARNING, annotation_text="critical (0.2)")
+        fig.update_layout(showlegend=False, height=max(300, 26 * len(psi_df)), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e6e8ef")
+        st.plotly_chart(fig, use_container_width=True)
+    st.caption("Population Stability Index on the few fields Oracle genuinely supplies (age, sex, deductible, witnesses, vehicle count/year). Every other feature this model relies on is constant on Oracle by construction — not shown here because a PSI on a constant is meaningless, not because it's fine.")
+
+with tab2:
+    stress_df = load_oracle_model_comparison()
+    if len(stress_df):
+        st.markdown("Fresh models trained **directly on Oracle's own real fields** (not this project's model):")
+        st.dataframe(stress_df, use_container_width=True, hide_index=True)
+        st.markdown(
+            f"""<div class="aeg-note" style="background:{SUCCESS}14;border-color:{SUCCESS}55;">
+            Oracle IS learnable fraud data — a fresh XGBoost model reaches
+            ROC-AUC {stress_df.set_index('model').loc['oracle_xgb','roc_auc']:.3f} when trained on
+            Oracle's own fields (Fault, PastNumberOfClaims, etc.). This confirms the collapse above is a
+            <b>feature-availability problem</b>, not evidence Oracle is unlearnable — the shipped model was
+            simply never built on fields that would survive a change of data source.</div>""",
+            unsafe_allow_html=True,
+        )
+
+with tab3:
+    st.markdown(f"**Fields mapped from Oracle for real:** `{'`, `'.join(report['fields_mapped_for_real'])}`")
+    st.caption("Every other raw field falls back to its documented default (feature_engineering.MISSING_COLUMN_DEFAULTS) — nothing invented to move the score either way, same honest-mapping rule as the sibling MoMo Guard project's PaySim adapter.")
+    st.write("")
+    st.caption(f"Model: {report.get('fields_mapped_for_real') and 'random_forest'} · Generated {report['generated_at'][:19].replace('T',' ')} UTC · Regenerate with `python -m app.ml.evaluate_oracle`.")

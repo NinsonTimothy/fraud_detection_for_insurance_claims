@@ -1,0 +1,10 @@
+feature,psi,significant_drift
+police_report_available_NO,0.7374679819611955,True
+police_report_available_YES,0.7374679819611955,True
+age,0.048907624502235,False
+number_of_vehicles_involved,1.1910954087625563,True
+insured_sex_FEMALE,0.7571420583883397,True
+auto_year,8.430988386023277,True
+policy_deductable,6.709447089571922,True
+insured_sex_MALE,0.7571420583883397,True
+witnesses,6.006110959375549,True
