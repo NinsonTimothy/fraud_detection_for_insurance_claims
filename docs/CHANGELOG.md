@@ -1,7 +1,7 @@
 # Changelog — full bug-fix/hardening pass
 
 This file is the final deliverable summary for the PB-xx/SH-xx bug-fix and
-hardening pass run against the baseline commit (`b00d23a`, "chore: baseline
+hardening pass run against the baseline commit (`c6543b8`, "chore: baseline
 commit of Aegis Risk Engine, pre-fix"). Three things, in order: (1) an
 honest before/after metrics comparison, generated from real artifacts on
 both ends, not hand-typed; (2) every ticket ID mapped to the exact commit
@@ -12,7 +12,7 @@ repo's `docs/`.
 ## 1. Before / after
 
 **Before** = `models/metrics.json` / `data/external/oracle/oracle_validation_report.json`
-/ `data/processed/cross_validation_results.csv` as committed at `b00d23a`
+/ `data/processed/cross_validation_results.csv` as committed at `c6543b8`
 (the pre-fix baseline). **After** = the same artifacts as they stand today —
 regenerate with `python -m app.ml.generate_metrics_report` (PB-15) from
 `backend/`, or read `docs/CURRENT_METRICS.md`, rather than trusting the
@@ -20,7 +20,7 @@ numbers below to still be current by the time this is read.
 
 ### Held-out single-split (Random Forest, shipped model)
 
-| Metric | Before (`b00d23a`) | After (current) | Why it moved |
+| Metric | Before (`c6543b8`) | After (current) | Why it moved |
 |---|---|---|---|
 | Operating threshold | 0.48 | 0.44 | PB-03: threshold now chosen from honest out-of-fold training predictions, never the test set |
 | Recall | 49.0% | 73.5% | PB-02 (leakage removal) + PB-03 (honest threshold) + SH-01 (`authorities_contacted` NaN-misparsing fix) + PB-24 (`incident_severity`/`insured_education_level` encoding fixes) combined — see each ticket's own before/after in §2 |
@@ -44,7 +44,7 @@ numbers below to still be current by the time this is read.
 Read this pair the way §3 of `docs/REBUILD_NOTES.md` already frames it:
 the "before" CV numbers were themselves measured under a since-fixed CV
 leakage bug (`zip3_lookup` built once on the full pool and reused across
-folds) for an even earlier snapshot — the `b00d23a` baseline above already
+folds) for an even earlier snapshot — the `c6543b8` baseline above already
 reflects that specific fix (its CV std/mean are in the honest, single-holdout-
 consistent range, not the ~0.94 leaked figure `docs/REBUILD_NOTES.md` §2
 documents from an even earlier state). Every number in the "after" column
@@ -95,33 +95,33 @@ this table is the index, not a replacement for reading either. Run
 
 | Ticket | Commit | Summary |
 |---|---|---|
-| Baseline | `b00d23a` | Pre-fix baseline commit (Phase 0) |
-| PB-17 | `5dc3496` | Remove dead config/artifacts, wire up unused settings |
-| PB-21 | `2b8ad66` | Doc/code drift and copy-paste leftovers from sibling project |
-| PB-22 | `01b351c` | Add `.gitignore`/CI, timezone-aware timestamps, migrations note |
-| PB-24 | `026cf05` | Confirm `incident_severity` ordinal order, remove TODO-VERIFY; fix `insured_education_level` encoding |
+| Baseline | `c6543b8` | Pre-fix baseline commit (Phase 0) |
+| PB-17 | `5db8ba4` | Remove dead config/artifacts, wire up unused settings |
+| PB-21 | `6772b87` | Doc/code drift and copy-paste leftovers from sibling project |
+| PB-22 | `54b872b` | Add `.gitignore`/CI, timezone-aware timestamps, migrations note |
+| PB-24 | `3c95e57` | Confirm `incident_severity` ordinal order, remove TODO-VERIFY; fix `insured_education_level` encoding |
 | PB-25 | *(no repo commit — see note below)* | Purge stale figures from the `aegis_risk_engine_build_summary.md` project doc |
-| PB-01 | `7cbe8f1` | Fix dashboard `sys.path` crash on first scoring action |
-| PB-02 | `5d9d8b2` | Remove `zip3_risk_tier` 4-digit-prefix leakage feature entirely, retrain |
-| SH-01 | `7e3337a` | `authorities_contacted`'s "None" is a real category, not NaN |
-| PB-03 | `a3e5244` | Stop choosing thresholds/SHAP importance from the test set |
-| PB-14, SH-03, SH-06 | `2f6a486` | Evidence-backed champion selection (D4), SMOTE vs. class-weight comparison, fix `is_new_customer` threshold |
-| PB-04 | `9a24b1f` | Unify risk policy — `score_batch`/`score_one` used to disagree at risk-band edges |
-| PB-06 | `2af8481` | Validate `/score` input instead of accepting `dict[str, Any]` |
-| PB-07 | `25bc057` | Expected client mistakes (duplicate ref, empty CSV, non-numeric cell) 500'd instead of returning a clean 4xx |
-| PB-10 | `663a249` | Fix invalid PSI comparison (scaled vs. unscaled features) + masked bool-dtype crash |
-| PB-05 | `7e3a35e` | Restore/upgrade local SHAP explanations (k=8, not 3) |
-| SH-02 | `99d1986` | Gate `is_highrisk_hobby`/`is_exec_occupation` behind `INCLUDE_PROXY_FEATURES` (D3), off by default |
-| SH-04 | `07c0a91` | Report uncertainty (5-fold mean±SD, bootstrap 95% CI) everywhere a point estimate is reported |
-| PB-08, PB-09 | `36cb9cb` | Remove the simulated-Kafka ingestion path entirely (D1) |
-| PB-11 | `bfbb5c4` | Add API-key auth; mask PII (`insured_zip`) in claim responses |
-| PB-12 | `0a8ebf3` | Dashboard scores and escalations now persist to the DB (were silently discarded) |
-| PB-13 | `aa31743` | Fix Docker/deployment config — credentials, exposed DB port, unnecessary train-init/Postgres coupling (D2) |
-| PB-18 | `63d913a` | Batch scoring: N+1 inserts, missing `top_reasons`, unbounded upload size/row count |
-| PB-19 | `63ff264` | Dashboard hardcoded scoring dates; free-text hobby/occupation fields |
-| PB-20 | `738e1d0` | Train/serve skew from per-batch median fallbacks; unsafe batch zip/date parsing |
-| PB-16 | `608d909` | Oracle adapter, train-pipeline, train/serve-parity, and negative-path test coverage |
-| PB-15, SH-05, PB-23 | `a9e9735` | Auto-generated metrics doc; Oracle statistical (PR-AUC prevalence) caveat; geographic/regulatory-transferability disclosure |
+| PB-01 | `2a71a65` | Fix dashboard `sys.path` crash on first scoring action |
+| PB-02 | `24e88a1` | Remove `zip3_risk_tier` 4-digit-prefix leakage feature entirely, retrain |
+| SH-01 | `1f7283e` | `authorities_contacted`'s "None" is a real category, not NaN |
+| PB-03 | `c4879f6` | Stop choosing thresholds/SHAP importance from the test set |
+| PB-14, SH-03, SH-06 | `63b8961` | Evidence-backed champion selection (D4), SMOTE vs. class-weight comparison, fix `is_new_customer` threshold |
+| PB-04 | `e54f8a4` | Unify risk policy — `score_batch`/`score_one` used to disagree at risk-band edges |
+| PB-06 | `4cf11ec` | Validate `/score` input instead of accepting `dict[str, Any]` |
+| PB-07 | `e2d6250` | Expected client mistakes (duplicate ref, empty CSV, non-numeric cell) 500'd instead of returning a clean 4xx |
+| PB-10 | `191150f` | Fix invalid PSI comparison (scaled vs. unscaled features) + masked bool-dtype crash |
+| PB-05 | `bcca5c8` | Restore/upgrade local SHAP explanations (k=8, not 3) |
+| SH-02 | `354e402` | Gate `is_highrisk_hobby`/`is_exec_occupation` behind `INCLUDE_PROXY_FEATURES` (D3), off by default |
+| SH-04 | `35c56e4` | Report uncertainty (5-fold mean±SD, bootstrap 95% CI) everywhere a point estimate is reported |
+| PB-08, PB-09 | `8d1f060` | Remove the simulated-Kafka ingestion path entirely (D1) |
+| PB-11 | `3e59f59` | Add API-key auth; mask PII (`insured_zip`) in claim responses |
+| PB-12 | `9b38c0e` | Dashboard scores and escalations now persist to the DB (were silently discarded) |
+| PB-13 | `94941da` | Fix Docker/deployment config — credentials, exposed DB port, unnecessary train-init/Postgres coupling (D2) |
+| PB-18 | `a4f5ce2` | Batch scoring: N+1 inserts, missing `top_reasons`, unbounded upload size/row count |
+| PB-19 | `025674e` | Dashboard hardcoded scoring dates; free-text hobby/occupation fields |
+| PB-20 | `12d1992` | Train/serve skew from per-batch median fallbacks; unsafe batch zip/date parsing |
+| PB-16 | `1b52283` | Oracle adapter, train-pipeline, train/serve-parity, and negative-path test coverage |
+| PB-15, SH-05, PB-23 | `a109741` | Auto-generated metrics doc; Oracle statistical (PR-AUC prevalence) caveat; geographic/regulatory-transferability disclosure |
 
 **PB-25 note:** this ticket's deliverable was an edit to the
 `aegis_risk_engine_build_summary.md` document held in the claude.ai FYP
@@ -132,10 +132,10 @@ into this repo; `docs/REBUILD_NOTES.md` and `docs/CURRENT_METRICS.md` are
 this repo's own, always-current sources of truth.
 
 **Decisions (D1–D4)**, applied via the tickets above, not separate rows:
-D1 (remove Kafka, not just leave it unwired) → PB-08/PB-09 (`36cb9cb`);
-D2 (SQLite default, Postgres optional) → PB-13 (`aa31743`); D3 (proxy
-features behind a flag, off by default) → SH-02 (`99d1986`); D4 (champion
-model chosen by evidence, not assumed) → PB-14 (`2f6a486`).
+D1 (remove Kafka, not just leave it unwired) → PB-08/PB-09 (`8d1f060`);
+D2 (SQLite default, Postgres optional) → PB-13 (`94941da`); D3 (proxy
+features behind a flag, off by default) → SH-02 (`354e402`); D4 (champion
+model chosen by evidence, not assumed) → PB-14 (`63b8961`).
 
 ## 3. Incomplete-ticket report
 
