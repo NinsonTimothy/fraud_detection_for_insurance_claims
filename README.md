@@ -1,172 +1,682 @@
 # Aegis Risk Engine
 
-Explainable insurance-claim fraud scoring — a production-style rebuild of the
-DCIT400 final-year project "Explainable Risk Scoring: Insurance Claim Fraud
-Detection" (Kwabena Adipah Osei & Timothy Ninson, University of Ghana,
-supervised by Prof. Ebenezer Owusu).
+An explainable insurance-claim fraud scoring system developed by **Timothy Ninson** and **Kwabena Adipah Osei**.
 
-Random Forest (SMOTE-balanced) is the shipped fraud classifier, trained on a
-real, human-labeled 1,000-row auto-insurance-claims dataset, with SHAP
-explainability, a cost-optimal decision threshold, a FastAPI backend (two
-ingestion paths: single-claim API, batch CSV — a third, simulated Kafka
-stream, was removed entirely, see PB-08/PB-09 in `docs/REBUILD_NOTES.md`), a
-Postgres-backed feature/audit store (SQLite fallback), and a Streamlit
-analyst dashboard. It is honestly, disclosedly validated against a second
-real dataset (Oracle, 15,420 rows) it never trained on — and that
-validation shows the model does **not** generalize past its own training
-distribution, with the root cause fully quantified. See
-`docs/REBUILD_NOTES.md` and `docs/LIMITATIONS.md` before presenting any
-number from this repo — they are part of the deliverable, not an
-afterthought.
+Aegis Risk Engine is a rebuilt, production-style fraud detection system for scoring auto-insurance claims. It combines machine-learning classification, SHAP-based explainability, API-based scoring, batch review, persistence, monitoring, external validation, and an analyst dashboard in one application.
 
-## Quickstart (no Docker required)
+The earlier version of the project is preserved under [`legacy/version-a/`](legacy/version-a/).
+
+> **Project status:** Academic/research prototype. It is designed to demonstrate an end-to-end explainable fraud-risk workflow and should not be treated as a production insurance decision engine without further validation, security hardening, governance, and operational controls.
+
+---
+
+## Overview
+
+Aegis Risk Engine supports:
+
+- Single-claim fraud scoring through a FastAPI API
+- Batch claim scoring from CSV files
+- Random Forest fraud classification
+- SHAP-based local and global explanations
+- Cost-aware threshold analysis
+- Claim, audit, and feedback persistence
+- Model monitoring and external validation
+- Streamlit analyst dashboard
+- PostgreSQL support with SQLite fallback
+- Docker Compose deployment
+- Automated backend testing
+
+The shipped classifier is a **Random Forest** trained on a 1,000-row auto-insurance claims dataset. The system is also evaluated against a separate 15,420-row external dataset to test whether its performance transfers beyond the training distribution.
+
+That external validation reveals an important limitation: the model does **not** generalize strongly to the external dataset. This is intentionally documented rather than hidden. See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) and [`docs/CURRENT_METRICS.md`](docs/CURRENT_METRICS.md) before interpreting model performance.
+
+---
+
+## Architecture
+
+```text
+                    ┌──────────────────────────┐
+                    │   Insurance Claim Data   │
+                    └────────────┬─────────────┘
+                                 │
+                     ┌───────────▼───────────┐
+                     │ Cleaning & Features   │
+                     │   ML preprocessing    │
+                     └───────────┬───────────┘
+                                 │
+                  ┌──────────────▼──────────────┐
+                  │ Random Forest Risk Scoring │
+                  │ + threshold / risk policy  │
+                  └──────────────┬──────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │ SHAP Explainability     │
+                    └────────────┬────────────┘
+                                 │
+            ┌────────────────────┼────────────────────┐
+            │                    │                    │
+   ┌────────▼────────┐  ┌────────▼─────────┐  ┌──────▼─────────┐
+   │ FastAPI Backend │  │ Streamlit        │  │ PostgreSQL /   │
+   │ single + batch  │  │ Analyst Dashboard│  │ SQLite Store   │
+   └─────────────────┘  └──────────────────┘  └────────────────┘
+```
+
+Claims can be scored individually through the API or in batches from CSV files. The dashboard uses the same scoring service as the backend, keeping model behavior consistent across interfaces.
+
+---
+
+## Tech Stack
+
+### Machine Learning
+
+- Python
+- scikit-learn
+- XGBoost
+- imbalanced-learn
+- SHAP
+- pandas
+- NumPy
+
+### Backend
+
+- FastAPI
+- Pydantic
+- SQLAlchemy
+- PostgreSQL
+- SQLite
+
+### Dashboard
+
+- Streamlit
+- Plotly
+
+### Deployment and Testing
+
+- Docker Compose
+- pytest
+
+---
+
+## Repository Structure
+
+```text
+.
+├── backend/
+│   ├── app/
+│   │   ├── api/          # scoring, claims, feedback, audit, monitoring
+│   │   ├── core/         # configuration and API-key security
+│   │   ├── db/           # SQLAlchemy models and persistence
+│   │   └── ml/           # cleaning, training, inference, SHAP, monitoring
+│   ├── tests/            # backend and ML tests
+│   └── requirements.txt
+│
+├── dashboard/
+│   ├── app_pages/        # analyst-facing dashboard pages
+│   ├── components/       # shared dashboard utilities
+│   ├── streamlit_app.py
+│   └── requirements.txt
+│
+├── data/
+│   ├── raw/              # primary training data
+│   ├── cleaned/          # cleaned data and cleaning artifacts
+│   ├── processed/        # evaluation and monitoring outputs
+│   └── external/         # external validation data
+│
+├── models/               # trained model artifacts and metrics
+├── docs/                 # metrics, limitations, rebuild notes and analysis
+├── deployment/           # Dockerfiles and training entrypoint
+├── legacy/
+│   └── version-a/        # preserved earlier project version
+│
+├── .env.example
+├── docker-compose.yml
+└── README.md
+```
+
+---
+
+# Getting Started
+
+Aegis can be run in two ways:
+
+1. **Without Docker** — best for development, debugging, testing, and exploring the code.
+2. **With Docker Compose** — best for starting the full stack together with PostgreSQL.
+
+## Prerequisites
+
+For a local installation:
+
+- Git
+- Python **3.12**
+- pip
+
+Python 3.12 is recommended for the pinned dependency set. In particular, the project pins `psycopg2-binary==2.9.9`, which is more straightforward to install under Python 3.12 than Python 3.13 on Windows.
+
+For the containerized installation:
+
+- Git
+- Docker Desktop or Docker Engine
+- Docker Compose
+
+---
+
+# Option A — Run Without Docker
+
+## 1. Clone the repository
+
+```bash
+git clone https://github.com/NinsonTimothy/fraud_detection_for_insurance_claims.git
+cd fraud_detection_for_insurance_claims
+```
+
+## 2. Create a Python 3.12 virtual environment
+
+### Windows — Git Bash
+
+```bash
+py -3.12 -m venv .venv
+source .venv/Scripts/activate
+```
+
+### Windows — PowerShell
+
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\Activate.ps1
+```
+
+### macOS / Linux
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+```
+
+Confirm the interpreter:
+
+```bash
+python --version
+```
+
+You should see Python 3.12.x.
+
+## 3. Install backend dependencies
 
 ```bash
 cd backend
+python -m pip install --upgrade pip
 pip install -r requirements.txt
-python -m app.ml.clean_data        # -> data/cleaned/insurance_claims_cleaned.csv
-python -m app.ml.train             # trains RF/LR/XGB, saves models/, ~30s
-python -m app.ml.evaluate_oracle   # external validation + stress test, ~1min
-pytest tests/ -q                   # all should pass (see the test file list above for coverage)
-
-export AEGIS_API_KEY=dev-local-key                    # PB-11: every business endpoint needs this header
-uvicorn app.main:app --reload --port 8000              # API at http://localhost:8000/docs — /health needs no key
 ```
 
-`curl -H "X-API-Key: $AEGIS_API_KEY" http://localhost:8000/claims` — every endpoint except `/health` and the docs routes
-needs that header (see `docs/LIMITATIONS.md`'s "No authentication" bullet for what this is and isn't).
+## 4. Clean and prepare the data
 
-In a second terminal:
+```bash
+python -m app.ml.clean_data
+```
+
+This prepares the cleaned dataset used by the training pipeline.
+
+## 5. Train the models
+
+```bash
+python -m app.ml.train
+```
+
+The training pipeline evaluates the supported models and saves the resulting artifacts under `models/`.
+
+## 6. Run external validation
+
+```bash
+python -m app.ml.evaluate_oracle
+```
+
+This evaluates the trained system against the separate Oracle dataset used for external validation and stress testing.
+
+## 7. Run the test suite
+
+```bash
+pytest
+```
+
+At the time of the current rebuild, the backend suite passes **153 tests**.
+
+## 8. Set a local API key
+
+Every business API endpoint requires an `X-API-Key` header. `/health` and the automatically generated API documentation remain open.
+
+### Git Bash / macOS / Linux
+
+```bash
+export AEGIS_API_KEY=dev-local-key
+```
+
+### PowerShell
+
+```powershell
+$env:AEGIS_API_KEY="dev-local-key"
+```
+
+The value above is only for local development. Use a strong secret in any real deployment.
+
+## 9. Start the FastAPI backend
+
+From `backend/`:
+
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+
+Open:
+
+- API: `http://127.0.0.1:8000`
+- Swagger documentation: `http://127.0.0.1:8000/docs`
+- Health check: `http://127.0.0.1:8000/health`
+
+Example authenticated request:
+
+```bash
+curl -H "X-API-Key: $AEGIS_API_KEY" http://127.0.0.1:8000/claims
+```
+
+## 10. Start the Streamlit dashboard
+
+Open a **second terminal** at the repository root.
+
+Activate the same virtual environment if necessary, then run:
 
 ```bash
 cd dashboard
 pip install -r requirements.txt
-streamlit run streamlit_app.py               # dashboard at http://localhost:8501
+streamlit run streamlit_app.py
 ```
 
-The dashboard calls the same `FraudScoringService` the API uses, in-process
-— they can never disagree about a score.
+Open:
 
-## Quickstart (Docker Compose)
+```text
+http://localhost:8501
+```
+
+## 11. Local database behavior
+
+When `DATABASE_URL` is not set, Aegis falls back to a local SQLite database:
+
+```text
+aegis.db
+```
+
+This makes the non-Docker setup suitable for development without requiring PostgreSQL.
+
+To use another database, provide a `DATABASE_URL` environment variable.
+
+---
+
+# Option B — Run With Docker Compose
+
+Docker Compose starts the main application stack together:
+
+- PostgreSQL
+- one-shot model/data initialization
+- FastAPI backend
+- Streamlit dashboard
+
+## 1. Clone the repository
+
+```bash
+git clone https://github.com/NinsonTimothy/fraud_detection_for_insurance_claims.git
+cd fraud_detection_for_insurance_claims
+```
+
+## 2. Create your environment file
+
+### Git Bash / macOS / Linux
+
+```bash
+cp .env.example .env
+```
+
+### Windows Command Prompt
+
+```cmd
+copy .env.example .env
+```
+
+### PowerShell
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Open `.env` and set your own values:
+
+```text
+AEGIS_API_KEY=replace-with-a-strong-api-key
+POSTGRES_USER=aegis
+POSTGRES_PASSWORD=replace-with-a-strong-password
+POSTGRES_DB=aegis
+```
+
+An optional full `DATABASE_URL` override is also supported.
+
+Do not use the shipped placeholder credentials for any real deployment.
+
+## 3. Build and start the stack
 
 ```bash
 docker compose up --build
 ```
 
-Brings up Postgres, a one-shot `train-init` container (cleans data +
-trains models + runs Oracle validation if `models/` is empty), the API
-(`:8000`), and the dashboard (`:8501`). (An earlier version also brought up
-a Kafka broker for a simulated claim-stream ingestion path — removed
-entirely, not just left unwired, see PB-08/PB-09 in `docs/REBUILD_NOTES.md`.)
-**Not independently verified end-to-end** in the sandbox this was built
-in — Docker Hub was network-blocked there, so no base image could be
-pulled, though `docker compose config` validates the full compose file.
-See `docs/LIMITATIONS.md` for the precise disclosure. Budget time to
-debug on first real run, the way any un-execute-tested deployment config
-deserves.
+The first run may take longer because Docker has to download base images and build the application images.
 
-Postgres here is the reference "production-like" datastore, not a hard
-requirement (D2, PB-13 in `docs/REBUILD_NOTES.md`) — `db/session.py`
-falls back to a local SQLite file the moment nothing overrides
-`DATABASE_URL`, the same as the no-Docker quickstart above. Copy
-`.env.example` to `.env` to set real `AEGIS_API_KEY`/`POSTGRES_*` values
-(or a full `DATABASE_URL` override, e.g. a `sqlite:///` path, to skip
-Postgres entirely) — every value has a visibly-insecure default if you
-don't. Postgres's `5432` is intentionally not published to the host;
-`api`/`dashboard`/`train-init` reach it over the compose network by
-service name.
+The `train-init` service prepares the data and model artifacts before the application services start.
 
-## Repository structure
+Once running:
 
-```
-aegis-risk-engine/
-├── backend/
-│   ├── app/
-│   │   ├── ml/            # clean_data, feature_engineering, train, explainer,
-│   │   │                     cost_threshold, psi, inference, oracle_adapter,
-│   │   │                     evaluate_oracle, uncertainty, risk_policy
-│   │   ├── api/            # scoring, claims, feedback, audit, monitoring
-│   │   │                     (PB-08/PB-09: a Kafka-based ingestion module was
-│   │   │                     removed entirely — see docs/REBUILD_NOTES.md)
-│   │   ├── db/              # SQLAlchemy models + session (Postgres/SQLite)
-│   │   ├── core/              # config
-│   │   └── main.py             # FastAPI app
-│   ├── tests/                   # ML core (incl. the single-row-scoring
-│   │                              regression test), API, PSI, explainer,
-│   │                              proxy-feature gating, uncertainty
-│   └── requirements.txt
-├── dashboard/
-│   ├── streamlit_app.py           # nav shell
-│   ├── app_pages/                 # Overview, Score a claim, Batch review,
-│   │                                Model insights, Monitoring & external validation
-│   └── components/                 # theme.py, data_access.py
-├── data/
-│   ├── raw/insurance_claims_raw.csv        # real, 1,000 rows, 24.7% fraud
-│   ├── cleaned/                              # + cleaning_log.csv, missing_value_treatment_plan.csv
-│   ├── processed/                             # model_comparison.csv, cross_validation_results.csv,
-│   │                                            shap_feature_importance.csv, cost_threshold_sweep.csv
-│   └── external/oracle/                        # real, 15,420 rows, 6.0% fraud
-├── models/                                       # .pkl artifacts, metrics.json, feature_columns.json
-├── docs/
-│   ├── ml_feature_critique.md                     # original critique (verbatim) this rebuild implements
-│   ├── generalization_and_cv_results.md            # original external-validation writeup (verbatim)
-│   ├── REBUILD_NOTES.md                             # what changed here vs. the original, and why
-│   ├── LIMITATIONS.md                                # every known, disclosed limitation
-│   └── CURRENT_METRICS.md                             # auto-generated (PB-15) — never hand-edit;
-│                                                         regenerate with `python -m app.ml.generate_metrics_report`
-├── deployment/                                        # Dockerfiles, entrypoint-train.sh
-├── docker-compose.yml
-└── README.md                                            # this file
+```text
+API:       http://localhost:8000
+API docs:  http://localhost:8000/docs
+Dashboard: http://localhost:8501
 ```
 
-## Success metrics, in priority order
+The Docker Compose configuration has been run successfully on a normal local Docker environment as part of the rebuilt-project verification.
 
-This project optimizes and reports in this order: **Recall > F1 > PR-AUC >
-ROC-AUC > Accuracy.** Missing a real fraud case (a false negative) is
-costlier than one extra analyst review of a legitimate claim (a false
-positive — see `backend/app/ml/cost_threshold.py`'s disclosed cost model),
-so recall is ranked first; F1 keeps precision from being ignored entirely;
-ROC-AUC/accuracy are reported for completeness but are not what model or
-threshold choices are optimized against. Every model-comparison and
-champion-selection claim in this repo is read through this ordering, not
-through "whichever number is highest."
+## 4. Stop the stack
 
-## Key findings to lead with in a defense
+Press:
 
-1. **Internal performance is honest, not leaked.** Every reported number
-   (holdout and 5-fold CV, full-pipeline-refit-per-fold) is generated from
-   `models/metrics.json` — run `python -m app.ml.generate_metrics_report`
-   (PB-15) from `backend/`, or read its output at `docs/CURRENT_METRICS.md`,
-   for current figures; never a hand-typed number here. Three real leaks
-   were found and fixed during
-   this rebuild (ZIP-prefix target-encoding leakage, a missing-data parsing
-   bug, and threshold/SHAP selection on the test set — `REBUILD_NOTES.md`
-   §§6-8) and the current numbers are the honest result of fixing all
-   three, not a "deliberately modest" placeholder.
-2. **The model does not generalize to Oracle** (ROC-AUC ≈0.47-0.50,
-   statistically random) — but a stress test proves Oracle itself IS
-   learnable fraud data (fresh models reach ROC-AUC ≈0.81-0.82 on Oracle's
-   own fields). This is a feature-availability problem, precisely
-   quantified, not a data problem.
-3. **Two specific features were flagged as not safe to treat as real
-   signal** (`is_highrisk_hobby`/`is_exec_occupation` — dataset artifacts)
-   and, as of SH-02/D3, are excluded from the deployable model by default
-   — gated behind `INCLUDE_PROXY_FEATURES` (`app/core/config.py`), not
-   merely disclosed-and-kept. Both variants are measured and reported
-   (`data/processed/proxy_feature_ablation.csv`), and the performance
-   cost of excluding them is disclosed, not hidden (`docs/REBUILD_NOTES.md`
-   §"SH-02"). A third, `zip3_risk_tier`, was found to be worse than
-   disclosed leakage — a near-row-unique lookup from a 4-digit ZIP prefix
-   bug, not a genuine 3-digit ZIP3 — and has been removed entirely
-   (`docs/REBUILD_NOTES.md` §"PB-02").
-4. **What real SIU tooling has that this doesn't** (prior-claims history,
-   fault attribution, network-link analysis) is named explicitly as an
-   architectural ceiling this dataset cannot support — not glossed over.
-5. **Champion model (Random Forest) was chosen by measured evidence, not
-   by default.** The working assumption going in was a regularised
-   Logistic Regression champion; a paired, same-fold nested-CV comparison
-   (`docs/REBUILD_NOTES.md` §11) showed Random Forest winning on this
-   project's own top-priority metrics — recall and F1 — by a margin that
-   holds up under a paired significance test (p<0.05 on both), so Random
-   Forest was kept as champion with Logistic Regression reported as the
-   runner-up.
+```text
+Ctrl + C
+```
+
+Then remove the stopped containers:
+
+```bash
+docker compose down
+```
+
+To also remove the Docker volumes:
+
+```bash
+docker compose down -v
+```
+
+> `docker compose down -v` removes persisted Docker volume data. Use it only when you intentionally want a clean reset.
+
+---
+
+## API Authentication
+
+Aegis uses a shared API key for business endpoints.
+
+Send it using:
+
+```text
+X-API-Key: <your-key>
+```
+
+The following remain publicly accessible for operational convenience:
+
+- `/health`
+- FastAPI documentation routes
+
+This is intentionally lightweight authentication for an academic prototype. It is **not** a substitute for production-grade user authentication, RBAC, identity management, or secrets management.
+
+See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) for the full security discussion.
+
+---
+
+## Model and Evaluation
+
+### Shipped Model
+
+The current champion model is:
+
+```text
+Random Forest
+```
+
+The deployable model excludes the project's identified proxy-style hobby and occupation features by default.
+
+The system prioritizes metrics in this order:
+
+```text
+Recall > F1 > PR-AUC > ROC-AUC > Accuracy
+```
+
+This reflects the project's assumption that missing a genuine fraud case is more costly than sending an additional legitimate claim for analyst review.
+
+### Current Metric Snapshot
+
+The current generated metrics report identifies:
+
+| Metric | Random Forest |
+|---|---:|
+| Operating threshold | 0.44 |
+| Holdout recall | 73.5% |
+| Holdout precision | 63.2% |
+| Holdout F1 | 0.679 |
+| Holdout PR-AUC | 0.545 |
+| Holdout ROC-AUC | 0.794 |
+| Holdout accuracy | 83.0% |
+
+These values are a snapshot of the current artifacts and can change after retraining.
+
+The authoritative generated report is:
+
+[`docs/CURRENT_METRICS.md`](docs/CURRENT_METRICS.md)
+
+Regenerate it from `backend/` with:
+
+```bash
+python -m app.ml.generate_metrics_report
+```
+
+---
+
+## External Validation
+
+A separate external dataset is used to test transfer beyond the model's training distribution.
+
+The current external validation shows a major generalization failure:
+
+| Evaluation | ROC-AUC |
+|---|---:|
+| Internal holdout | 0.794 |
+| Oracle external validation | 0.463 |
+
+This result is a core finding of the project, not something hidden from the evaluation.
+
+The project analysis attributes much of the failure to **feature availability and distribution shift** between the training data and the external dataset. The external dataset lacks equivalents for several important model features.
+
+Read the detailed interpretation before drawing conclusions:
+
+- [`docs/CURRENT_METRICS.md`](docs/CURRENT_METRICS.md)
+- [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md)
+- [`docs/REBUILD_NOTES.md`](docs/REBUILD_NOTES.md)
+
+---
+
+## Explainability
+
+Aegis uses SHAP to provide explanations for model behavior.
+
+The system supports:
+
+- global feature importance
+- claim-level explanations
+- analyst-facing risk reasons
+- model-insight views in the Streamlit dashboard
+
+Explainability should be treated as an aid to analysis rather than proof of causality. A feature receiving a strong SHAP contribution does not establish that the feature causes fraud.
+
+---
+
+## Data
+
+The project includes two main datasets.
+
+### Primary dataset
+
+- 1,000 auto-insurance claims
+- approximately 24.7% fraud
+- used for model development and internal evaluation
+
+### External validation dataset
+
+- 15,420 claims
+- approximately 6% fraud
+- used only for external validation/stress testing, not for training the shipped model
+
+The datasets are US auto-insurance data. The project was developed in a University of Ghana academic context, but the current model has **not** been validated on Ghanaian insurance claims.
+
+---
+
+## Important Limitations
+
+Aegis is a research and software-engineering prototype, not a production insurance adjudication system.
+
+Important limitations include:
+
+- Small primary training dataset
+- Limited number of confirmed fraud examples
+- Significant distribution shift between internal and external datasets
+- Poor external generalization
+- Dataset-specific feature artifacts
+- No demonstrated transferability to Ghanaian insurance claims
+- No prior-claims-history features
+- No policyholder network-link analysis
+- No automated retraining pipeline
+- No database migration framework
+- Lightweight shared API-key authentication rather than per-user authorization
+- Limited PII protection compared with production insurance systems
+- No claim-decision governance or human-override framework suitable for real deployment
+
+The project deliberately documents these limitations rather than presenting internal model performance as evidence of production readiness.
+
+See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) for the full discussion.
+
+---
+
+## Project History
+
+This repository contains two generations of the project.
+
+### Aegis Risk Engine
+
+The current system is the rebuilt version, with a redesigned:
+
+- ML training and evaluation pipeline
+- feature-engineering workflow
+- backend API
+- database layer
+- analyst dashboard
+- monitoring workflow
+- external-validation process
+- test suite
+- deployment configuration
+
+### Version A
+
+The earlier implementation is preserved under:
+
+[`legacy/version-a/`](legacy/version-a/)
+
+It remains available for history, comparison, and reference but is not used by the current application.
+
+The original repository state before the rebuild is also preserved in Git history/tagging.
+
+---
+
+## Development Workflow
+
+A typical development cycle is:
+
+```bash
+cd backend
+pytest
+python -m app.ml.train
+python -m app.ml.evaluate_oracle
+python -m app.ml.generate_metrics_report
+```
+
+After changing model logic, regenerate the metrics report rather than manually editing reported performance values.
+
+---
+
+## Troubleshooting
+
+### `pg_config executable not found` while installing dependencies
+
+On Windows, this can occur when using Python 3.13 with the pinned `psycopg2-binary==2.9.9`.
+
+Use Python 3.12:
+
+```bash
+py -3.12 -m venv .venv
+source .venv/Scripts/activate
+pip install -r backend/requirements.txt
+```
+
+### API starts but business endpoints return an authentication error
+
+Set `AEGIS_API_KEY` and send the same value in the `X-API-Key` header.
+
+### Dashboard does not start
+
+Make sure the dashboard dependencies are installed:
+
+```bash
+cd dashboard
+pip install -r requirements.txt
+streamlit run streamlit_app.py
+```
+
+### Model artifacts are missing
+
+From `backend/`, run:
+
+```bash
+python -m app.ml.clean_data
+python -m app.ml.train
+```
+
+### Docker services fail on first build
+
+Check that Docker Desktop/Engine is running and that your machine can pull images from Docker Hub, then retry:
+
+```bash
+docker compose up --build
+```
+
+---
+
+## Documentation
+
+More detailed project documentation is available under [`docs/`](docs/).
+
+Key files include:
+
+- [`docs/CURRENT_METRICS.md`](docs/CURRENT_METRICS.md) — generated model metrics
+- [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) — known limitations and deployment caveats
+- [`docs/REBUILD_NOTES.md`](docs/REBUILD_NOTES.md) — rebuild decisions and fixes
+- [`docs/ml_feature_critique.md`](docs/ml_feature_critique.md) — feature/model critique
+- [`docs/generalization_and_cv_results.md`](docs/generalization_and_cv_results.md) — validation analysis
+
+---
+
+## Contributors
+
+### Timothy Ninson
+
+GitHub: [NinsonTimothy](https://github.com/NinsonTimothy)
+
+### Kwabena Adipah Osei
+
+GitHub: [adipahosei](https://github.com/adipahosei)
+
+---
+
+## Responsible Use
+
+Fraud-risk scores should support human investigation, not replace it.
+
+A high score is not proof that a claim is fraudulent, and a low score is not proof that a claim is legitimate. Any real-world deployment would require additional validation, governance, privacy safeguards, fairness review, access controls, operational monitoring, and human oversight.
