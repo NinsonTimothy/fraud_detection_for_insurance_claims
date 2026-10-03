@@ -102,26 +102,26 @@ this table is the index, not a replacement for reading either. Run
 | PB-24 | `3c95e57` | Confirm `incident_severity` ordinal order, remove TODO-VERIFY; fix `insured_education_level` encoding |
 | PB-25 | *(no repo commit — see note below)* | Purge stale figures from the `aegis_risk_engine_build_summary.md` project doc |
 | PB-01 | `2a71a65` | Fix dashboard `sys.path` crash on first scoring action |
-| PB-02 | `24e88a1` | Remove `zip3_risk_tier` 4-digit-prefix leakage feature entirely, retrain |
-| SH-01 | `1f7283e` | `authorities_contacted`'s "None" is a real category, not NaN |
-| PB-03 | `c4879f6` | Stop choosing thresholds/SHAP importance from the test set |
-| PB-14, SH-03, SH-06 | `63b8961` | Evidence-backed champion selection (D4), SMOTE vs. class-weight comparison, fix `is_new_customer` threshold |
-| PB-04 | `e54f8a4` | Unify risk policy — `score_batch`/`score_one` used to disagree at risk-band edges |
-| PB-06 | `4cf11ec` | Validate `/score` input instead of accepting `dict[str, Any]` |
-| PB-07 | `e2d6250` | Expected client mistakes (duplicate ref, empty CSV, non-numeric cell) 500'd instead of returning a clean 4xx |
-| PB-10 | `191150f` | Fix invalid PSI comparison (scaled vs. unscaled features) + masked bool-dtype crash |
-| PB-05 | `bcca5c8` | Restore/upgrade local SHAP explanations (k=8, not 3) |
-| SH-02 | `354e402` | Gate `is_highrisk_hobby`/`is_exec_occupation` behind `INCLUDE_PROXY_FEATURES` (D3), off by default |
-| SH-04 | `35c56e4` | Report uncertainty (5-fold mean±SD, bootstrap 95% CI) everywhere a point estimate is reported |
-| PB-08, PB-09 | `8d1f060` | Remove the simulated-Kafka ingestion path entirely (D1) |
-| PB-11 | `3e59f59` | Add API-key auth; mask PII (`insured_zip`) in claim responses |
-| PB-12 | `9b38c0e` | Dashboard scores and escalations now persist to the DB (were silently discarded) |
-| PB-13 | `94941da` | Fix Docker/deployment config — credentials, exposed DB port, unnecessary train-init/Postgres coupling (D2) |
-| PB-18 | `a4f5ce2` | Batch scoring: N+1 inserts, missing `top_reasons`, unbounded upload size/row count |
-| PB-19 | `025674e` | Dashboard hardcoded scoring dates; free-text hobby/occupation fields |
-| PB-20 | `12d1992` | Train/serve skew from per-batch median fallbacks; unsafe batch zip/date parsing |
-| PB-16 | `1b52283` | Oracle adapter, train-pipeline, train/serve-parity, and negative-path test coverage |
-| PB-15, SH-05, PB-23 | `a109741` | Auto-generated metrics doc; Oracle statistical (PR-AUC prevalence) caveat; geographic/regulatory-transferability disclosure |
+| PB-02 | `b5277ff` | Remove `zip3_risk_tier` 4-digit-prefix leakage feature entirely, retrain |
+| SH-01 | `699e11f` | `authorities_contacted`'s "None" is a real category, not NaN |
+| PB-03 | `56c262d` | Stop choosing thresholds/SHAP importance from the test set |
+| PB-14, SH-03, SH-06 | `c478194` | Evidence-backed champion selection (D4), SMOTE vs. class-weight comparison, fix `is_new_customer` threshold |
+| PB-04 | `63628c4` | Unify risk policy — `score_batch`/`score_one` used to disagree at risk-band edges |
+| PB-06 | `13aea0a` | Validate `/score` input instead of accepting `dict[str, Any]` |
+| PB-07 | `151af2f` | Expected client mistakes (duplicate ref, empty CSV, non-numeric cell) 500'd instead of returning a clean 4xx |
+| PB-10 | `9780735` | Fix invalid PSI comparison (scaled vs. unscaled features) + masked bool-dtype crash |
+| PB-05 | `b46745a` | Restore/upgrade local SHAP explanations (k=8, not 3) |
+| SH-02 | `a79ca21` | Gate `is_highrisk_hobby`/`is_exec_occupation` behind `INCLUDE_PROXY_FEATURES` (D3), off by default |
+| SH-04 | `1c48cf3` | Report uncertainty (5-fold mean±SD, bootstrap 95% CI) everywhere a point estimate is reported |
+| PB-08, PB-09 | `50ac5b4` | Remove the simulated-Kafka ingestion path entirely (D1) |
+| PB-11 | `074aa39` | Add API-key auth; mask PII (`insured_zip`) in claim responses |
+| PB-12 | `beacf02` | Dashboard scores and escalations now persist to the DB (were silently discarded) |
+| PB-13 | `55ede4c` | Fix Docker/deployment config — credentials, exposed DB port, unnecessary train-init/Postgres coupling (D2) |
+| PB-18 | `157119d` | Batch scoring: N+1 inserts, missing `top_reasons`, unbounded upload size/row count |
+| PB-19 | `893c71f` | Dashboard hardcoded scoring dates; free-text hobby/occupation fields |
+| PB-20 | `207f2d3` | Train/serve skew from per-batch median fallbacks; unsafe batch zip/date parsing |
+| PB-16 | `65cf7f1` | Oracle adapter, train-pipeline, train/serve-parity, and negative-path test coverage |
+| PB-15, SH-05, PB-23 | `568453a` | Auto-generated metrics doc; Oracle statistical (PR-AUC prevalence) caveat; geographic/regulatory-transferability disclosure |
 
 **PB-25 note:** this ticket's deliverable was an edit to the
 `aegis_risk_engine_build_summary.md` document held in the claude.ai FYP
@@ -132,10 +132,10 @@ into this repo; `docs/REBUILD_NOTES.md` and `docs/CURRENT_METRICS.md` are
 this repo's own, always-current sources of truth.
 
 **Decisions (D1–D4)**, applied via the tickets above, not separate rows:
-D1 (remove Kafka, not just leave it unwired) → PB-08/PB-09 (`8d1f060`);
-D2 (SQLite default, Postgres optional) → PB-13 (`94941da`); D3 (proxy
-features behind a flag, off by default) → SH-02 (`354e402`); D4 (champion
-model chosen by evidence, not assumed) → PB-14 (`63b8961`).
+D1 (remove Kafka, not just leave it unwired) → PB-08/PB-09 (`50ac5b4`);
+D2 (SQLite default, Postgres optional) → PB-13 (`55ede4c`); D3 (proxy
+features behind a flag, off by default) → SH-02 (`a79ca21`); D4 (champion
+model chosen by evidence, not assumed) → PB-14 (`c478194`).
 
 ## 3. Incomplete-ticket report
 
