@@ -138,7 +138,7 @@ cards = [("Claims in view", f"{len(view):,}", f"of {len(result):,} scored"),
          ("High", f"{int((view['risk_grade'] == 'High').sum()):,}", "risk band"),
          ("Medium", f"{int((view['risk_grade'] == 'Medium').sum()):,}", "risk band"),
          ("Low", f"{int((view['risk_grade'] == 'Low').sum()):,}", "risk band"),
-         ("Mean score", f"{view['fraud_probability'].mean():.2f}" if len(view) else "—", "fraud-risk score, in view")]
+         ("Mean score", f"{view['fraud_probability'].mean():.2f}" if len(view) else "—", "fraud-risk score")]
 for col, (t, v, sub) in zip(k, cards):
     with col:
         kpi_card(t, v, sub)

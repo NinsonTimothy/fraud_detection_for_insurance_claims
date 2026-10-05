@@ -87,7 +87,7 @@ with tab0:
                                marker_color=[GRADE_COLOURS[b] for b in probe["risk_band"]],
                                text=[f"{v:.2f} · {b}" for v, b in zip(probe["fraud_risk_score"], probe["risk_band"])],
                                textposition="outside"))
-        fig.add_hline(y=thr, line_dash="dash", line_color=MUTED)
+        fig.add_hline(y=thr, line_dash="dash", line_color=MUTED, line_width=1, layer="below")
         fig.add_annotation(x=1.0, xref="paper", y=thr, text=f"review threshold {thr:.2f}", showarrow=False,
                            xanchor="left", xshift=6, font=dict(size=11, color=MUTED))
         fig.update_layout(height=380, yaxis_title="Fraud-risk score", yaxis_range=[0, max(1.0, probe["fraud_risk_score"].max() + 0.1)], **{**_LAYOUT, "margin": dict(l=10, r=140, t=30, b=10)})
