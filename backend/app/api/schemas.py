@@ -110,6 +110,23 @@ class ClaimPayload(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _total_matches_components(self):
+        """TC-01: total_claim_amount is derived (injury + property + vehicle,
+        exact in all 1,000 training rows). If a caller sends all four and
+        they disagree by more than $1, reject it rather than silently
+        overwriting — the caller should know their data is inconsistent.
+        Sending the three components alone (no total) is the preferred form;
+        the pipeline derives the total itself."""
+        parts = (self.injury_claim, self.property_claim, self.vehicle_claim)
+        if self.total_claim_amount is not None and all(p is not None for p in parts):
+            if abs(self.total_claim_amount - sum(parts)) > 1.0:
+                raise ValueError(
+                    f"total_claim_amount ({self.total_claim_amount:,.2f}) must equal injury_claim + "
+                    f"property_claim + vehicle_claim ({sum(parts):,.2f}); omit total_claim_amount to have it derived"
+                )
+        return self
+
     def supplied_fields(self) -> set[str]:
         """Field names (by alias, matching RAW_FEATURE_COLUMNS) this
         payload actually set — used to report which raw fields were
@@ -133,6 +150,7 @@ class ReasonCode(BaseModel):
     feature: str
     display_name: str
     value: Any
+    display_value: str | None = None
     shap_value: float
     direction: str
     impact: str
@@ -149,6 +167,9 @@ class ScoreOut(BaseModel):
     defaulted_fields: list[str] = []
     top_reasons: list[ReasonCode] = []
     model_version: str
+    # DS-01: every score carries the decision-support statement — the system
+    # recommends, a human investigator decides.
+    decision_support_notice: str | None = None
 
 
 class FeedbackIn(BaseModel):

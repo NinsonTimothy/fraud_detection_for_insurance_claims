@@ -190,11 +190,41 @@ def apply_missing_defaults(df: pd.DataFrame) -> pd.DataFrame:
     Oracle genuinely has get real values, everything else gets a disclosed,
     neutral constant — nothing invented to move the score either way."""
     df = df.copy()
+    df = derive_total_claim_amount(df)
     for col in RAW_FEATURE_COLUMNS:
         if col not in df.columns:
             df[col] = MISSING_COLUMN_DEFAULTS[col]
         else:
             df[col] = df[col].fillna(MISSING_COLUMN_DEFAULTS[col])
+    return df
+
+
+CLAIM_COMPONENT_COLUMNS = ("injury_claim", "property_claim", "vehicle_claim")
+
+
+def derive_total_claim_amount(df: pd.DataFrame) -> pd.DataFrame:
+    """TC-01 (pre-defence fix): total_claim_amount is DERIVED, not typed.
+
+    In all 1,000 training rows total_claim_amount == injury_claim +
+    property_claim + vehicle_claim exactly (verified, 0 mismatches), so it
+    is not independent information. The scoring form used to ask for it as
+    a separate input, which let an analyst enter a total that contradicted
+    the components — a combination the model never saw in training.
+
+    Rule: wherever all three components are present, the total is set to
+    their sum (a supplied total that disagrees is overwritten — the
+    components are the source of truth). If a component is missing, a
+    supplied total is kept as-is, and only if both are missing does the
+    documented default apply."""
+    df = df.copy()
+    if all(c in df.columns for c in CLAIM_COMPONENT_COLUMNS):
+        parts = df[list(CLAIM_COMPONENT_COLUMNS)].apply(pd.to_numeric, errors="coerce")
+        have_all = parts.notna().all(axis=1)
+        if have_all.any():
+            if "total_claim_amount" not in df.columns:
+                df["total_claim_amount"] = np.nan
+            df["total_claim_amount"] = pd.to_numeric(df["total_claim_amount"], errors="coerce")
+            df.loc[have_all, "total_claim_amount"] = parts.loc[have_all].sum(axis=1)
     return df
 
 
@@ -292,7 +322,18 @@ def engineer_features(df: pd.DataFrame, include_proxy_features: bool | None = No
     out["vehicle_age_at_incident"] = (incident_date.dt.year.fillna(INCIDENT_YEAR_FALLBACK) - df["auto_year"]).clip(lower=0)
 
     # --- Behavioral / structural flags (real signal) ---
-    out["is_no_witness"] = (df["witnesses"] == 0).astype(int)
+    # MS-02 (pre-defence fix): `is_no_witness` (witnesses == 0) was REMOVED.
+    # It encoded an assumption ("no witnesses = suspicious", a common
+    # staged-accident red flag) that this dataset contradicts: fraud rate by
+    # witness count is 0 -> 20.1%, 1 -> 24.4%, 2 -> 29.6%, 3 -> 24.7%
+    # (n = 249/258/250/243). Zero-witness claims are the LEAST likely to be
+    # fraud here, so the flag pushed scores in the opposite direction to its
+    # name, and reason codes like "no witness (yes) decreased the risk"
+    # confused reviewers. The raw `witnesses` count stays in
+    # NUMERIC_PASSTHROUGH_COLUMNS, so the model can still learn whatever the
+    # data shows; the counter-intuitive pattern is disclosed in
+    # docs/LIMITATIONS.md as a dataset artefact, not presented as real
+    # fraud behaviour.
     out["incident_severity_ordinal"] = df["incident_severity"].map(SEVERITY_ORDINAL).fillna(1).astype(int)
     out["is_major_damage"] = (df["incident_severity"] == "Major Damage").astype(int)
 

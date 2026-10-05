@@ -43,11 +43,23 @@ HIGH_RISK_EDGE = 0.6
 
 RISK_GRADES = ("Low", "Medium", "High")
 
+# DS-01 (pre-defence fix): decision-SUPPORT wording. The Low band used to
+# read "No action — auto-approved", which described the system as making a
+# claims decision on its own. It never does and must not: the model only
+# RECOMMENDS a level of scrutiny, and a human (claims handler or
+# investigator) makes every decision. Every action below is therefore
+# phrased as a recommendation, and DECISION_SUPPORT_NOTICE is shown next to
+# every score in the API response and the dashboard.
 RECOMMENDED_ACTIONS = {
-    "Low": "No action — auto-approved",
-    "Medium": "Standard investigator review queue",
-    "High": "Priority SIU escalation",
+    "Low": "Recommend standard claims handling (no investigation suggested) — handler decides",
+    "Medium": "Recommend investigator review — investigator decides",
+    "High": "Recommend priority SIU review — investigator decides",
 }
+
+DECISION_SUPPORT_NOTICE = (
+    "Decision support only: Aegis recommends a level of scrutiny. It does not approve, "
+    "deny, or settle any claim; a human investigator makes every decision."
+)
 
 
 def grade_for(proba: float) -> str:

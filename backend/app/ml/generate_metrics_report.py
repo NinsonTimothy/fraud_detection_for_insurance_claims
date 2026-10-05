@@ -88,7 +88,11 @@ def build_report_markdown() -> str:
                   f"**train fraud rate:** {_pct(metrics['fraud_rate'])}")
     lines.append("")
 
-    lines.append("## Held-out single-split comparison")
+    lines.append("## Held-out single-split comparison (test set, reported once, never used to choose)")
+    lines.append("")
+    lines.append("Each candidate is evaluated at the threshold it chose on the training split. The rule's "
+                 "score is only ever 0 or 1, so any threshold between 0 and 1 gives identical decisions; "
+                 "the 0.05 shown is simply the first grid value.")
     lines.append("")
     lines.append("| Model | Threshold | Recall | Precision | F1 | PR-AUC | ROC-AUC | Accuracy |")
     lines.append("|---|---|---|---|---|---|---|---|")
@@ -102,7 +106,7 @@ def build_report_markdown() -> str:
     lines.append("")
 
     if cv_df is not None:
-        lines.append("## 5-fold cross-validation (full pipeline refit per fold, mean ± SD)")
+        lines.append("## Cross-validation (nested, TRAINING split only, 5-fold x 3 repeats, refit per fold, mean ± SD)")
         lines.append("")
         lines.append("| Model | ROC-AUC | PR-AUC | F1 | Recall | Precision |")
         lines.append("|---|---|---|---|---|---|")
@@ -116,27 +120,52 @@ def build_report_markdown() -> str:
             )
         lines.append("")
 
-    if champion is not None:
-        lines.append("## Champion selection (D4 — measured, not defaulted)")
+    if champion is not None and "protocol" in champion:
+        lines.append("## Champion selection (leak-free, train split only)")
         lines.append("")
-        lines.append(f"- D4 default absent evidence: `{champion['default_champion_per_D4']}`")
-        lines.append(f"- Measured champion (this project's own metric hierarchy, paired 5-fold CV): `{champion['measured_champion']}`")
-        tt = champion.get("paired_ttest", {})
-        if "recall" in tt and "f1" in tt:
-            lines.append(
-                f"- Paired t-test (n_folds={tt.get('n_folds', '?')}): recall p={tt['recall']['p']:.4f}, "
-                f"F1 p={tt['f1']['p']:.4f} — **low statistical power by construction** "
-                f"(only {tt.get('n_folds', 5) - 1} degrees of freedom on a 5-fold paired test); "
-                f"treated as real, reproducible, directionally-consistent evidence for THIS "
-                f"dataset, not as license to over-claim certainty beyond it."
-            )
+        proto = champion["protocol"]
+        for k in ("data", "outer_cv", "inner_cv", "selection_rule", "significance_test"):
+            lines.append(f"- **{k.replace('_', ' ')}:** {proto[k]}")
+        lines.append(f"- **Measured champion:** `{champion['measured_champion']}`")
         lines.append("")
+        summary_path = PROCESSED_DIR / "model_selection_summary.csv"
+        if summary_path.exists():
+            sm = pd.read_csv(summary_path)
+            lines.append("| Model (nested CV on train, mean ± SD) | F1 | Recall | Precision | PR-AUC | ROC-AUC | Threshold |")
+            lines.append("|---|---|---|---|---|---|---|")
+            for _, r in sm.sort_values("f1_mean", ascending=False).iterrows():
+                lines.append(
+                    f"| {r['model']} | {_f3(r['f1_mean'])} ± {_f3(r['f1_std'])} | {_f3(r['recall_mean'])} ± {_f3(r['recall_std'])} | "
+                    f"{_f3(r['precision_mean'])} ± {_f3(r['precision_std'])} | {_f3(r['pr_auc_mean'])} ± {_f3(r['pr_auc_std'])} | "
+                    f"{_f3(r['roc_auc_mean'])} ± {_f3(r['roc_auc_std'])} | {r['threshold_mean']:.2f} |")
+            lines.append("")
+        tests_path = PROCESSED_DIR / "champion_pairwise_tests.csv"
+        if tests_path.exists():
+            td = pd.read_csv(tests_path)
+            lines.append(f"Paired comparisons, champion minus other (corrected resampled t-test, "
+                         f"{int(td['n_folds'].iloc[0])} paired folds). Every p-value below is computed, none typed:")
+            lines.append("")
+            lines.append("| vs | Metric | Mean difference | Champion wins folds | p (corrected) | Significant at 0.05 |")
+            lines.append("|---|---|---|---|---|---|")
+            for _, r in td.iterrows():
+                lines.append(f"| {r['vs']} | {r['metric']} | {r['mean_difference']:+.3f} | {int(r['champion_wins_folds'])}/{int(r['n_folds'])} | "
+                             f"{r['p_corrected']:.3f} | {'yes' if r['significant_at_0_05'] else 'no'} |")
+            lines.append("")
+        ba = metrics.get("baseline_agreement")
+        if ba:
+            lines.append(f"**Champion vs. the Major-Damage rule on the test set:** identical flag/no-flag decision on "
+                         f"{_pct(ba['test_decision_agreement'])} of {ba['n_test']} claims "
+                         f"({ba['flagged_by_champion_not_rule']} flagged only by the champion, "
+                         f"{ba['flagged_by_rule_not_champion']} only by the rule).")
+            lines.append("")
 
     if oracle is not None:
         lines.append("## Oracle external validation")
         lines.append("")
         ih = oracle["internal_holdout_metrics"]
         om = oracle["oracle_metrics"]
+        lines.append(f"Model evaluated: `{oracle.get('model', primary)}`")
+        lines.append("")
         lines.append(f"| | Internal holdout | Oracle (external) |")
         lines.append(f"|---|---|---|")
         lines.append(f"| ROC-AUC | {_f3(ih['roc_auc'])} | {_f3(om['roc_auc'])} |")
@@ -149,13 +178,14 @@ def build_report_markdown() -> str:
             ci = oracle["oracle_metrics_ci"]
             roc_ci = ci.get("roc_auc", {})
             if roc_ci:
-                contains_half = roc_ci["ci_lower"] <= 0.5 <= roc_ci["ci_upper"]
-                verdict = (
-                    "consistent with random ranking (CI contains 0.5)"
-                    if contains_half else
-                    "statistically distinguishable from random — the CI does NOT contain 0.5, "
-                    "so this is measurably below chance, not merely indistinguishable from it"
-                )
+                if roc_ci["ci_upper"] < 0.5:
+                    verdict = ("**significantly inverted ranking** — the whole CI is below 0.5, so on Oracle the "
+                               "model gives genuine fraud cases systematically LOWER scores than legitimate claims. "
+                               "Do not describe this as 'random'")
+                elif roc_ci["ci_lower"] > 0.5:
+                    verdict = "better than random but degraded (CI entirely above 0.5)"
+                else:
+                    verdict = "indistinguishable from random ranking (CI contains 0.5)"
                 lines.append(
                     f"Oracle ROC-AUC bootstrap 95% CI: [{_f3(roc_ci['ci_lower'])}, "
                     f"{_f3(roc_ci['ci_upper'])}] (n_boot={roc_ci.get('n_boot_effective', '?')}) — {verdict}."

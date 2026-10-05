@@ -17,7 +17,7 @@ import pandas as pd
 from app.core.config import MODELS_DIR
 from app.ml.explainer import ClaimExplainer
 from app.ml.feature_engineering import RAW_FEATURE_COLUMNS, align_to_training_columns, engineer_features
-from app.ml.risk_policy import grade_for, grade_for_array, is_flagged, recommended_action
+from app.ml.risk_policy import DECISION_SUPPORT_NOTICE, grade_for, grade_for_array, is_flagged, recommended_action
 
 MODEL_VERSION_FILE = MODELS_DIR / "metrics.json"
 
@@ -26,23 +26,35 @@ class FraudScoringService:
     _instance: "FraudScoringService | None" = None
 
     def __init__(self):
-        self.rf_pipeline = joblib.load(MODELS_DIR / "random_forest_final.pkl")
+        # MS-01: the shipped model is whichever candidate won the leak-free
+        # selection in train.py (models/champion_model.pkl) — not hardcoded
+        # to Random Forest any more. Falls back to the legacy RF artifact
+        # only if an older models/ directory has no champion file.
+        champion_path = MODELS_DIR / "champion_model.pkl"
+        if not champion_path.exists():
+            champion_path = MODELS_DIR / "random_forest_final.pkl"
+        self.model_pipeline = joblib.load(champion_path)
         self.scaler = joblib.load(MODELS_DIR / "standard_scaler.pkl")
         with open(MODELS_DIR / "feature_columns.json") as f:
             self.feature_columns: list[str] = json.load(f)
         with open(MODEL_VERSION_FILE) as f:
             metrics = json.load(f)
         self.operating_threshold = metrics["operating_threshold"]
-        self.model_version = f"random_forest-{metrics['n_features']}f-{metrics['n_train']}train"
+        self.model_name = metrics.get("primary_model", "random_forest")
+        self.model_version = f"{self.model_name}-{metrics['n_features']}f-{metrics['n_train']}train"
 
-        rf_only = self.rf_pipeline.named_steps["rf"]
-        # PB-05: ClaimExplainer now picks the correct SHAP explainer from
-        # the model's own type (TreeExplainer here, since RF is a tree
-        # ensemble — no background_data needed). If a future retrain's
-        # nested-CV evidence ever swaps the shipped champion to Logistic
-        # Regression (D4 allows this), ClaimExplainer would need a
-        # background_data sample passed here too — see explainer.py.
-        self.explainer = ClaimExplainer(rf_only, self.feature_columns)
+        final_estimator = self.model_pipeline.steps[-1][1] if hasattr(self.model_pipeline, "steps") else self.model_pipeline
+        # Tree models need no background data; a linear champion (Logistic
+        # Regression) needs the scaled training sample train.py saves.
+        background_path = MODELS_DIR / "shap_background.csv"
+        background = pd.read_csv(background_path)[self.feature_columns] if background_path.exists() else None
+        self.explainer = ClaimExplainer(final_estimator, self.feature_columns, background_data=background)
+
+    @property
+    def rf_pipeline(self):
+        """Backward-compatible alias (older code/tests called the shipped
+        model `rf_pipeline`). It is the CHAMPION pipeline, whatever it is."""
+        return self.model_pipeline
 
     @classmethod
     def instance(cls) -> "FraudScoringService":
@@ -58,7 +70,7 @@ class FraudScoringService:
 
     def score_batch(self, claims: pd.DataFrame) -> pd.DataFrame:
         X_scaled, X_raw = self._prepare(claims, return_raw=True)
-        proba = self.rf_pipeline.predict_proba(X_scaled)[:, 1]
+        proba = self.model_pipeline.predict_proba(X_scaled)[:, 1]
         # PB-04: grade_for_array() and score_one()'s grade_for() are the
         # SAME function's vectorized/scalar forms (risk_policy.py) — they
         # can no longer disagree at the band edges the way the old
@@ -84,7 +96,7 @@ class FraudScoringService:
     def score_one(self, claim: dict) -> dict:
         claim_df = pd.DataFrame([claim])
         X_scaled, X_raw = self._prepare(claim_df, return_raw=True)
-        proba = float(self.rf_pipeline.predict_proba(X_scaled)[:, 1][0])
+        proba = float(self.model_pipeline.predict_proba(X_scaled)[:, 1][0])
         # PB-05: k defaults to explainer.DEFAULT_TOP_K (8) — was hardcoded
         # to 3 here, too few for a genuinely useful "why" (see explainer.py
         # module docstring / DEFAULT_TOP_K comment).
@@ -102,4 +114,5 @@ class FraudScoringService:
             "recommended_action": recommended_action(grade),
             "defaulted_fields": defaulted_fields,
             "top_reasons": reasons, "model_version": self.model_version,
+            "decision_support_notice": DECISION_SUPPORT_NOTICE,
         }

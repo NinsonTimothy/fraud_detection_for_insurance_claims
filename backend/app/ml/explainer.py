@@ -62,6 +62,7 @@ class ClaimExplainer:
         rows is enough); tree models ignore it."""
         self.model = model
         self.feature_columns = feature_columns
+        self._source_of = build_source_map(feature_columns)
 
         if isinstance(model, _TREE_MODEL_TYPES):
             self.explainer = shap.TreeExplainer(model)
@@ -138,36 +139,65 @@ class ClaimExplainer:
         return [self._reasons_for_row(sv_matrix[i], display.iloc[i], dtypes, k) for i in range(len(display))]
 
     def _reasons_for_row(self, sv: np.ndarray, raw_values: pd.Series, dtypes: pd.Series, k: int) -> list[dict]:
-        order = np.argsort(-np.abs(sv))[:k]
-        max_abs = float(np.abs(sv).max()) if len(sv) else 0.0
+        """EX-01 (pre-defence fix): one reason per ORIGINAL claim field.
+
+        The bug: categorical fields are one-hot encoded, so "police report
+        available" is really two model columns, `police_report_available_NO`
+        and `police_report_available_YES`. Each column used to become its own
+        reason, labelled with the column's CATEGORY name. For a claim where
+        the analyst selected "NO", the `_YES` column (value 0, meaning "not
+        YES") still produced a reason reading "police report available YES
+        (0) ... decreased the fraud risk" — which every reviewer read as
+        "the claim HAS a police report". The model was right; the label was
+        wrong.
+
+        The fix: SHAP values are additive, so the contributions of all the
+        dummy columns that came from one categorical field are summed into
+        ONE reason, and that reason is labelled with the category this claim
+        actually has (the dummy whose value is 1). "Police report available:
+        NO" is now the only thing an investigator can see. Numeric/flag
+        features are unaffected apart from friendlier labels."""
+        groups: dict[str, dict] = {}
+        for idx, feat in enumerate(self.feature_columns):
+            source, category = self._source_of.get(feat, (feat, None))
+            g = groups.setdefault(source, {"shap": 0.0, "category": None, "idx": idx, "is_cat": category is not None})
+            g["shap"] += float(sv[idx])
+            if category is not None:
+                val = raw_values.iloc[idx]
+                if hasattr(val, "item"):
+                    val = val.item()
+                if bool(val):
+                    g["category"] = category
+
+        ordered = sorted(groups.items(), key=lambda kv: -abs(kv[1]["shap"]))[:k]
+        max_abs = max((abs(g["shap"]) for _, g in ordered), default=0.0)
         reasons = []
-        for rank, idx in enumerate(order, start=1):
-            feat = self.feature_columns[idx]
-            # PB-05: decide "is this a yes/no flag" from the COLUMN's dtype,
-            # not from the value itself — a genuine numeric feature (e.g.
-            # witnesses=1, or a ratio that happens to equal 0.0) must never
-            # be mislabeled "yes"/"no" just because its value looks
-            # boolean-ish. One-hot columns are bool dtype when the row's
-            # own category produced them, or int dtype (fill_value=0) when
-            # align_to_training_columns() padded in a category this row
-            # doesn't belong to (see feature_engineering.py) — both read
-            # correctly as a flag under is_bool_dtype-or-name check below.
-            col_is_flag = pd.api.types.is_bool_dtype(dtypes.iloc[idx]) or feat in ("is_highrisk_hobby", "is_exec_occupation", "is_new_customer", "is_no_witness", "is_major_damage")
-            raw_val = raw_values.iloc[idx]
-            if hasattr(raw_val, "item"):  # numpy scalar -> plain python
-                raw_val = raw_val.item()
-            direction = "increased" if sv[idx] > 0 else "decreased"
-            impact = _impact_label(abs(float(sv[idx])), max_abs)
-            display_value = _format_value(raw_val, is_flag=col_is_flag)
+        for rank, (source, g) in enumerate(ordered, start=1):
+            label = FEATURE_LABELS.get(source, _humanize(source))
+            if g["is_cat"]:
+                value = g["category"] if g["category"] is not None else "other / not seen in training"
+                display_value = value
+                value_out: object = value
+            else:
+                idx = g["idx"]
+                raw_val = raw_values.iloc[idx]
+                if hasattr(raw_val, "item"):
+                    raw_val = raw_val.item()
+                is_flag = pd.api.types.is_bool_dtype(dtypes.iloc[idx]) or source in FLAG_FEATURES
+                display_value = _format_feature_value(source, raw_val, is_flag)
+                value_out = bool(raw_val) if is_flag else (float(raw_val) if isinstance(raw_val, (int, float, np.number)) else str(raw_val))
+            direction = "increased" if g["shap"] > 0 else "decreased"
+            impact = _impact_label(abs(g["shap"]), max_abs)
             reasons.append({
                 "rank": rank,
-                "feature": feat,
-                "display_name": _humanize(feat),
-                "value": bool(raw_val) if col_is_flag else (float(raw_val) if isinstance(raw_val, (int, float, np.number)) else str(raw_val)),
-                "shap_value": float(sv[idx]),
+                "feature": source,
+                "display_name": label,
+                "value": value_out,
+                "display_value": display_value,
+                "shap_value": g["shap"],
                 "direction": direction,
                 "impact": impact,
-                "sentence": f"{_humanize(feat)} ({display_value}) {impact} {direction} the fraud risk score.",
+                "sentence": f"{label}: {display_value} — {impact} {direction} the fraud risk score.",
             })
         return reasons
 
@@ -203,3 +233,93 @@ def _format_value(val, is_flag: bool = False) -> str:
 
 def _humanize(feature: str) -> str:
     return feature.replace("_", " ").replace("-", " ").strip()
+
+
+# ---------------------------------------------------------------------------
+# EX-01 helpers: map model columns back to the claim fields they came from,
+# and give every field a label an investigator would actually use.
+# ---------------------------------------------------------------------------
+FLAG_FEATURES = {"is_highrisk_hobby", "is_exec_occupation", "is_new_customer", "is_major_damage"}
+
+FEATURE_LABELS = {
+    "is_major_damage": "Major damage incident",
+    "incident_severity_ordinal": "Incident severity",
+    "vehicle_claim_pct": "Vehicle share of total claim",
+    "injury_claim_pct": "Injury share of total claim",
+    "property_claim_pct": "Property share of total claim",
+    "claim_to_premium_ratio": "Claim-to-premium ratio",
+    "policy_age_at_incident_days": "Policy age at incident",
+    "is_new_customer": "New customer (under 24 months)",
+    "vehicle_age_at_incident": "Vehicle age at incident",
+    "is_highrisk_hobby": "High-risk hobby (proxy feature)",
+    "is_exec_occupation": "Executive occupation (proxy feature)",
+    "months_as_customer": "Months as customer",
+    "age": "Insured age",
+    "policy_deductable": "Policy deductible",
+    "policy_annual_premium": "Annual premium",
+    "umbrella_limit": "Umbrella limit",
+    "capital-gains": "Capital gains",
+    "capital-loss": "Capital loss",
+    "incident_hour_of_the_day": "Incident hour",
+    "number_of_vehicles_involved": "Vehicles involved",
+    "bodily_injuries": "Bodily injuries",
+    "witnesses": "Number of witnesses",
+    "total_claim_amount": "Total claim amount",
+    "injury_claim": "Injury claim",
+    "property_claim": "Property claim",
+    "vehicle_claim": "Vehicle claim",
+    "auto_year": "Vehicle model year",
+    "policy_state": "Policy state",
+    "policy_csl": "Policy CSL",
+    "insured_sex": "Insured sex",
+    "insured_education_level": "Education level",
+    "insured_relationship": "Insured relationship",
+    "incident_type": "Incident type",
+    "collision_type": "Collision type",
+    "authorities_contacted": "Authorities contacted",
+    "incident_state": "Incident state",
+    "property_damage": "Property damage",
+    "police_report_available": "Police report available",
+}
+
+_MONEY = {"policy_annual_premium", "policy_deductable", "umbrella_limit", "capital-gains", "capital-loss",
+          "total_claim_amount", "injury_claim", "property_claim", "vehicle_claim"}
+_PCT = {"vehicle_claim_pct", "injury_claim_pct", "property_claim_pct"}
+_SEVERITY_NAMES = {0: "Trivial Damage", 1: "Minor Damage", 2: "Major Damage", 3: "Total Loss"}
+
+
+def build_source_map(feature_columns: list[str]) -> dict[str, tuple[str, str]]:
+    """{model column -> (source claim field, category)} for every one-hot
+    column. Longest prefix wins, so `incident_state_OH` maps to
+    `incident_state`, never to some shorter `incident_` field."""
+    from app.ml.feature_engineering import CATEGORICAL_COLUMNS
+    prefixes = sorted(CATEGORICAL_COLUMNS, key=len, reverse=True)
+    mapping = {}
+    for col in feature_columns:
+        for cat in prefixes:
+            if col.startswith(cat + "_"):
+                mapping[col] = (cat, col[len(cat) + 1:])
+                break
+    return mapping
+
+
+def _format_feature_value(source: str, val, is_flag: bool) -> str:
+    if is_flag:
+        return "yes" if val else "no"
+    try:
+        fv = float(val)
+    except (TypeError, ValueError):
+        return str(val)
+    if source == "incident_severity_ordinal":
+        return _SEVERITY_NAMES.get(int(round(fv)), str(val))
+    if source in _MONEY:
+        return f"${fv:,.0f}"
+    if source in _PCT:
+        return f"{fv:.0%}"
+    if source == "claim_to_premium_ratio":
+        return f"{fv:.1f}x"
+    if source == "policy_age_at_incident_days":
+        return f"{fv:,.0f} days"
+    if source == "vehicle_age_at_incident":
+        return f"{fv:.0f} years"
+    return _format_value(val)

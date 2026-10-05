@@ -51,10 +51,14 @@ def test_report_flags_when_oracle_ci_excludes_random_chance():
     report = build_report_markdown()
     roc_ci = oracle["oracle_metrics_ci"]["roc_auc"]
     contains_half = roc_ci["ci_lower"] <= 0.5 <= roc_ci["ci_upper"]
-    if contains_half:
-        assert "consistent with random ranking" in report
+    # OR-01: wording is derived from the CI. Below 0.5 entirely => the
+    # report must say "significantly inverted", never "random".
+    if roc_ci["ci_upper"] < 0.5:
+        assert "significantly inverted" in report
+    elif contains_half:
+        assert "indistinguishable from random" in report
     else:
-        assert "statistically distinguishable from random" in report
+        assert "better than random" in report
 
 
 def test_report_includes_champion_selection_low_power_caveat_when_available():
@@ -62,8 +66,23 @@ def test_report_includes_champion_selection_low_power_caveat_when_available():
     if champion is None:
         pytest.skip("no champion_decision.json on disk in this environment")
     report = build_report_markdown()
-    assert "low statistical power by construction" in report
     assert champion["measured_champion"] in report
+    assert "corrected resampled t-test" in report
+
+
+def test_report_p_values_come_from_the_computed_tests_csv_not_typed_text():
+    """MS-01: the old champion note hardcoded "recall p=0.0086" while the
+    computed value was 0.498. Every p-value in the report must now equal the
+    one in champion_pairwise_tests.csv, and the stale figure must be gone."""
+    import pandas as pd
+    from app.ml.generate_metrics_report import PROCESSED_DIR
+    path = PROCESSED_DIR / "champion_pairwise_tests.csv"
+    if not path.exists():
+        pytest.skip("no champion_pairwise_tests.csv on disk")
+    report = build_report_markdown()
+    assert "0.0086" not in report
+    for _, r in pd.read_csv(path).iterrows():
+        assert f"{r['p_corrected']:.3f}" in report
 
 
 def test_report_is_written_to_docs_current_metrics(tmp_path, monkeypatch):

@@ -38,7 +38,8 @@ from xgboost import XGBClassifier
 
 from app.core.config import INCLUDE_PROXY_FEATURES
 from app.ml.cost_threshold import find_cost_optimal_threshold
-from app.ml.explainer import ClaimExplainer
+from app.ml import model_selection as ms
+from app.ml.explainer import ClaimExplainer, build_source_map
 from app.ml.feature_engineering import engineer_features
 from app.ml.uncertainty import bootstrap_metric_ci
 
@@ -224,7 +225,17 @@ def run_proxy_feature_ablation(train_df, test_df, y_train, y_test, full_df, y_fu
     return pd.DataFrame(rows)
 
 
+def _final_estimator(pipeline):
+    """The bare classifier at the end of a pipeline (what SHAP explains)."""
+    return pipeline.steps[-1][1] if hasattr(pipeline, "steps") else pipeline
+
+
 def main():
+    """MS-01 (pre-defence fix): champion selection now happens ENTIRELY on
+    the 800-row training split (nested, repeated, paired CV in
+    model_selection.py), with a "Major Damage" one-line rule included as a
+    baseline. The 200-row test split is used exactly once, at the end, to
+    report every candidate at the threshold it chose without seeing it."""
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -232,168 +243,164 @@ def main():
     X_train, X_test = build_features(train_df, test_df, y_train)
     feature_columns = list(X_train.columns)
 
+    # ---- 1. Model selection on TRAIN ONLY ----
+    print("Running nested, repeated CV on the training split (this is the slow step)...")
+    selection = ms.nested_cv_compare(X_train, y_train, feature_columns)
+    folds = selection["folds"]
+    candidates = {c.name: c for c in selection["candidates"]}
+    folds.to_csv(PROCESSED_DIR / "model_selection_folds.csv", index=False)
+    summary = ms.summarize(folds)
+    summary.to_csv(PROCESSED_DIR / "model_selection_summary.csv", index=False)
+    # cross_validation_results.csv keeps its old column layout for the
+    # dashboard, but is now the TRAIN-ONLY nested-CV summary (it used to be
+    # a CV over all 1,000 rows, test set included).
+    cv_df = summary[["model"] + [c for c in summary.columns if c.endswith(("_mean", "_std"))]]
+    cv_df.to_csv(PROCESSED_DIR / "cross_validation_results.csv", index=False)
+
+    decision = ms.select_champion(summary)
+    champion_name = decision["champion"]
+    tests_df = ms.pairwise_tests(folds, champion_name)
+    tests_df.to_csv(PROCESSED_DIR / "champion_pairwise_tests.csv", index=False)
+
+    # ---- 2. Fix every candidate's hyperparameters + threshold on the full
+    # training split (same inner procedure, still no test rows) ----
     scaler = StandardScaler()
     X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=feature_columns, index=X_train.index)
     X_test_scaled = pd.DataFrame(scaler.transform(X_test), columns=feature_columns, index=X_test.index)
 
-    # ---- Random Forest + SMOTE (shipped model) ----
-    rf_pipeline = ImbPipeline([
-        ("smote", SMOTE(random_state=RANDOM_STATE)),
-        ("rf", RandomForestClassifier(
-            n_estimators=200, max_depth=5, max_features=0.3,
-            min_samples_leaf=2, min_samples_split=10,
-            class_weight="balanced_subsample", random_state=RANDOM_STATE,
-        )),
-    ])
-    rf_pipeline.fit(X_train_scaled, y_train)
+    fitted, chosen = {}, {}
+    for name, cand in candidates.items():
+        params, thr = ms.final_tune_on_full_train(cand, X_train, y_train, feature_columns)
+        model = cand.factory(**params)
+        model.fit(X_train_scaled, y_train)
+        fitted[name], chosen[name] = model, {"params": params, "threshold": thr}
 
-    # ---- Logistic Regression (compared alternative) ----
-    lr_pipeline = ImbPipeline([
-        ("smote", SMOTE(random_state=RANDOM_STATE)),
-        ("lr", LogisticRegression(max_iter=2000, class_weight="balanced", random_state=RANDOM_STATE)),
-    ])
-    lr_pipeline.fit(X_train_scaled, y_train)
+    # ---- 3. The ONE look at the test set: report, never choose ----
+    comparison_rows = []
+    test_proba = {}
+    for name, model in fitted.items():
+        proba = model.predict_proba(X_test_scaled)[:, 1]
+        test_proba[name] = proba
+        row = evaluate(name, model, X_test_scaled, y_test, threshold=chosen[name]["threshold"])
+        row["hyperparameters"] = chosen[name]["params"]
+        row["is_baseline"] = candidates[name].is_baseline
+        row["flag_rate"] = float((proba >= chosen[name]["threshold"]).mean())
+        comparison_rows.append(row)
+    # champion first, then the rest, baseline last — readable tables
+    order = [champion_name] + [n for n in fitted if n not in (champion_name, ms.BASELINE_NAME)] + [ms.BASELINE_NAME]
+    comparison_rows = sorted(comparison_rows, key=lambda r: order.index(r["model"]))
+    pd.DataFrame(comparison_rows).drop(columns=["confusion_matrix", "hyperparameters"]).to_csv(
+        PROCESSED_DIR / "model_comparison.csv", index=False)
 
-    # ---- XGBoost (compared alternative) ----
-    xgb_pipeline = ImbPipeline([
-        ("smote", SMOTE(random_state=RANDOM_STATE)),
-        ("xgb", XGBClassifier(
-            n_estimators=200, max_depth=4, learning_rate=0.05,
-            subsample=0.8, colsample_bytree=0.8, eval_metric="logloss",
-            random_state=RANDOM_STATE,
-        )),
-    ])
-    xgb_pipeline.fit(X_train_scaled, y_train)
-
-    models = {"random_forest": rf_pipeline, "logistic_regression": lr_pipeline, "xgboost": xgb_pipeline}
-
-    estimator_factories = {
-        "random_forest": lambda: ImbPipeline([
-            ("smote", SMOTE(random_state=RANDOM_STATE)),
-            ("rf", RandomForestClassifier(n_estimators=200, max_depth=5, max_features=0.3,
-                                           min_samples_leaf=2, min_samples_split=10,
-                                           class_weight="balanced_subsample", random_state=RANDOM_STATE)),
-        ]),
-        "logistic_regression": lambda: ImbPipeline([
-            ("smote", SMOTE(random_state=RANDOM_STATE)),
-            ("lr", LogisticRegression(max_iter=2000, class_weight="balanced", random_state=RANDOM_STATE)),
-        ]),
-        "xgboost": lambda: ImbPipeline([
-            ("smote", SMOTE(random_state=RANDOM_STATE)),
-            ("xgb", XGBClassifier(n_estimators=200, max_depth=4, learning_rate=0.05,
-                                   subsample=0.8, colsample_bytree=0.8, eval_metric="logloss",
-                                   random_state=RANDOM_STATE)),
-        ]),
-    }
-
-    # ---- PB-03: choose the operating threshold from honest out-of-fold
-    # probabilities on TRAINING data only — never from X_test_scaled/y_test,
-    # which is reserved for final reporting below. Grid matches the
-    # original project's own ~0.55 operating point (recall-leaning, since
-    # missing fraud is costlier than a false alarm here).
-    rf_oof_proba_train = _out_of_fold_proba(estimator_factories["random_forest"], X_train, y_train)
-    thresholds_grid = np.linspace(0.3, 0.8, 51)
-    operating_threshold = _f1_optimal_threshold(y_train.values, rf_oof_proba_train, thresholds_grid)
-
-    # rf_proba_test is used ONLY to report final performance at the
-    # already-chosen operating_threshold (evaluate() below) and for the
-    # monitoring page's risk_scores_test.csv — never to choose anything.
-    rf_proba_test = rf_pipeline.predict_proba(X_test_scaled)[:, 1]
-
-    comparison_rows = [evaluate(name, m, X_test_scaled, y_test, threshold=0.5 if name != "random_forest" else operating_threshold) for name, m in models.items()]
-    model_comparison = pd.DataFrame(comparison_rows)
-    model_comparison.to_csv(PROCESSED_DIR / "model_comparison.csv", index=False)
-
-    # ---- SH-04: bootstrap 95% CI for every point-estimate metric in
-    # model_comparison.csv above — a single fixed 200-row holdout split has
-    # real sampling noise around it that a bare point estimate hides. This
-    # is complementary to cv_df's across-FOLD mean+-SD below (a different
-    # question: "how much would this move on a different SAMPLE of the
-    # same test rows" vs. "how much would this move on a different SPLIT
-    # of the training data"), not a replacement for it. See
-    # uncertainty.py's module docstring. ----
     bootstrap_rows = []
-    for name, m in models.items():
-        threshold = operating_threshold if name == "random_forest" else 0.5
-        proba = m.predict_proba(X_test_scaled)[:, 1]
-        ci = bootstrap_metric_ci(y_test.values, proba, threshold=threshold, n_boot=1000, random_state=RANDOM_STATE)
-        point_estimates = next(r for r in comparison_rows if r["model"] == name)
+    for row in comparison_rows:
+        name = row["model"]
+        ci = bootstrap_metric_ci(y_test.values, test_proba[name], threshold=chosen[name]["threshold"],
+                                 n_boot=1000, random_state=RANDOM_STATE)
         for metric, interval in ci.items():
             bootstrap_rows.append({
-                "model": name, "metric": metric, "point_estimate": point_estimates[metric],
+                "model": name, "metric": metric, "point_estimate": row[metric],
                 "ci_lower": interval["ci_lower"], "ci_upper": interval["ci_upper"],
                 "n_boot_effective": interval["n_boot_effective"],
             })
-    bootstrap_ci_df = pd.DataFrame(bootstrap_rows)
-    bootstrap_ci_df.to_csv(PROCESSED_DIR / "holdout_bootstrap_ci.csv", index=False)
+    pd.DataFrame(bootstrap_rows).to_csv(PROCESSED_DIR / "holdout_bootstrap_ci.csv", index=False)
 
-    full_df = pd.concat([train_df, test_df], ignore_index=True)
-    y_full = pd.concat([y_train, y_test], ignore_index=True)
-    cv_rows = [cross_validate_model(name, factory, full_df, y_full) for name, factory in estimator_factories.items()]
-    cv_df = pd.DataFrame(cv_rows)
-    cv_df.to_csv(PROCESSED_DIR / "cross_validation_results.csv", index=False)
+    # ---- 4. How different is the champion from the one-line rule? ----
+    champ_flag = test_proba[champion_name] >= chosen[champion_name]["threshold"]
+    rule_flag = test_proba[ms.BASELINE_NAME] >= chosen[ms.BASELINE_NAME]["threshold"]
+    baseline_agreement = {
+        "test_decision_agreement": float((champ_flag == rule_flag).mean()),
+        "flagged_by_champion_not_rule": int((champ_flag & ~rule_flag).sum()),
+        "flagged_by_rule_not_champion": int((~champ_flag & rule_flag).sum()),
+        "n_test": int(len(y_test)),
+        "note": ("Share of test claims on which the champion's flag/no-flag decision is identical "
+                 "to the 'incident_severity == Major Damage' rule. 1.0 means the model adds no "
+                 "decision-level information beyond that rule (it can still add ranking)."),
+    }
 
-    # ---- SH-02 / D3: proxy-feature ablation — report BOTH variants
-    # regardless of which one INCLUDE_PROXY_FEATURES ships. ----
-    proxy_ablation_df = run_proxy_feature_ablation(train_df, test_df, y_train, y_test, full_df, y_full)
-    proxy_ablation_df.to_csv(PROCESSED_DIR / "proxy_feature_ablation.csv", index=False)
+    champion_pipeline = fitted[champion_name]
+    champion_threshold = chosen[champion_name]["threshold"]
 
-    # ---- Cost-optimal threshold search (PB-03: also from train OOF
-    # probabilities + train claim amounts, never test). This is reported as
-    # a DIAGNOSTIC/sensitivity-analysis number, not wired into
-    # operating_threshold (which stays F1-optimal, see cost_threshold.py's
-    # module docstring for why: this dataset's mean claim amount is ~211x
-    # the flat false-positive review cost, so a pure expected-cost
-    # threshold trivially trends toward flagging nearly everyone — a
-    # documented, reproduced property of the disclosed cost assumption,
-    # not a bug in the sweep). ----
-    claim_amounts_train = train_df["total_claim_amount"].values
-    cost_result = find_cost_optimal_threshold(y_train.values, rf_oof_proba_train, claim_amounts_train, steps=50)
+    # ---- 5. Champion decision record — every number computed, none typed ----
+    s_idx = summary.set_index("model")
+    def _p(vs, metric):
+        r = tests_df[(tests_df["vs"] == vs) & (tests_df["metric"] == metric)]
+        return None if r.empty else {k: (float(r.iloc[0][k]) if k != "significant_at_0_05" else bool(r.iloc[0][k]))
+                                     for k in ("mean_difference", "t", "p_corrected", "significant_at_0_05")}
+    champion_decision = {
+        "protocol": {
+            "data": f"training split only ({len(y_train)} rows); the {len(y_test)}-row test split is never used for selection",
+            "outer_cv": f"{ms.OUTER_SPLITS}-fold stratified x {ms.OUTER_REPEATS} repeats = {ms.OUTER_SPLITS * ms.OUTER_REPEATS} paired folds",
+            "inner_cv": f"{ms.INNER_SPLITS}-fold, picks hyperparameters (PR-AUC) and threshold (F1) per candidate",
+            "selection_rule": ("highest mean outer-fold F1 at each candidate's own tuned threshold; must not be "
+                               f"worse than the '{ms.BASELINE_NAME}' baseline; ties within {ms.F1_TIE_TOLERANCE} F1 "
+                               "broken by PR-AUC"),
+            "significance_test": "Nadeau-Bengio corrected resampled t-test (two-sided) on the paired fold differences",
+        },
+        "measured_champion": champion_name,
+        **decision,
+        "champion_cv": {k: float(s_idx.loc[champion_name, k]) for k in s_idx.columns if k.endswith("_mean")},
+        "baseline_cv": {k: float(s_idx.loc[ms.BASELINE_NAME, k]) for k in s_idx.columns if k.endswith("_mean")},
+        "champion_vs_baseline": {m: _p(ms.BASELINE_NAME, m) for m in ("f1", "recall", "pr_auc", "roc_auc")},
+        "champion_vs_others": {other: {m: _p(other, m) for m in ("f1", "recall", "pr_auc", "roc_auc")}
+                               for other in fitted if other not in (champion_name, ms.BASELINE_NAME)},
+        "pairwise_tests_csv": "data/processed/champion_pairwise_tests.csv",
+    }
+    with open(PROCESSED_DIR / "champion_decision.json", "w") as f:
+        json.dump(champion_decision, f, indent=2)
+
+    # ---- 6. Cost-threshold sensitivity (diagnostic only, train OOF) ----
+    champ_factory = lambda: candidates[champion_name].factory(**chosen[champion_name]["params"])
+    oof_train = _out_of_fold_proba(champ_factory, X_train, y_train)
+    cost_result = find_cost_optimal_threshold(y_train.values, oof_train, train_df["total_claim_amount"].values, steps=50)
     cost_result["sweep"].to_csv(PROCESSED_DIR / "cost_threshold_sweep.csv", index=False)
 
-    # ---- SHAP global importance on the shipped model (PB-03: computed on
-    # X_train_scaled — the data the shipped rf_pipeline was actually fit
-    # on — not X_test_scaled. This is describing what the shipped model
-    # learned to use, not a generalization claim, so training data is the
-    # right input; reusing the test set here was needlessly spending it on
-    # something other than final reporting.) ----
-    rf_only = rf_pipeline.named_steps["rf"]
-    explainer = ClaimExplainer(rf_only, feature_columns)
+    # ---- 7. Proxy-feature ablation (now train-only CV as well) ----
+    proxy_ablation_df = run_proxy_feature_ablation(train_df, test_df, y_train, y_test, train_df, y_train)
+    proxy_ablation_df.to_csv(PROCESSED_DIR / "proxy_feature_ablation.csv", index=False)
+
+    # ---- 8. SHAP global importance (on training data the champion was fit on) ----
+    background = X_train_scaled.sample(min(100, len(X_train_scaled)), random_state=RANDOM_STATE)
+    explainer = ClaimExplainer(_final_estimator(champion_pipeline), feature_columns, background_data=background)
     shap_importance = explainer.global_importance(X_train_scaled)
     shap_importance["share_of_total"] = shap_importance["mean_abs_shap"] / shap_importance["mean_abs_shap"].sum()
     shap_importance.to_csv(PROCESSED_DIR / "shap_feature_importance.csv", index=False)
+    # Same importance, grouped back to the ORIGINAL claim fields (one-hot
+    # dummies summed) — what the scoring form's coverage check reads.
+    source_of = build_source_map(feature_columns)
+    shap_importance["source_field"] = shap_importance["feature"].map(lambda f: source_of.get(f, (f, None))[0])
+    by_field = (shap_importance.groupby("source_field")[["mean_abs_shap", "share_of_total"]].sum()
+                .sort_values("share_of_total", ascending=False).reset_index())
+    by_field.to_csv(PROCESSED_DIR / "shap_importance_by_field.csv", index=False)
 
-    # ---- Save artifacts ----
-    joblib.dump(rf_pipeline, MODELS_DIR / "random_forest_final.pkl")
-    joblib.dump(lr_pipeline, MODELS_DIR / "logistic_regression_final.pkl")
-    joblib.dump(xgb_pipeline, MODELS_DIR / "xgboost_final.pkl")
+    # ---- 9. Save artifacts ----
+    joblib.dump(champion_pipeline, MODELS_DIR / "champion_model.pkl")
+    for name, fname in (("random_forest", "random_forest_final.pkl"),
+                        ("logistic_regression", "logistic_regression_final.pkl"),
+                        ("xgboost", "xgboost_final.pkl")):
+        joblib.dump(fitted[name], MODELS_DIR / fname)
     joblib.dump(scaler, MODELS_DIR / "standard_scaler.pkl")
-    # NOTE: no separate shap_explainer.pkl artifact — FraudScoringService
-    # rebuilds ClaimExplainer directly from the loaded RF pipeline at
-    # startup (see inference.py), so a saved copy would be dead weight
-    # that could silently drift from the shipped model (PB-17).
-    # NOTE: no zip3_lookup.csv artifact anymore — PB-02 removed the
-    # zip3-derived feature entirely; see feature_engineering.py.
+    background.to_csv(MODELS_DIR / "shap_background.csv", index=False)
     with open(MODELS_DIR / "feature_columns.json", "w") as f:
         json.dump(feature_columns, f)
 
     metrics = {
-        "primary_model": "random_forest", "operating_threshold": operating_threshold,
+        "primary_model": champion_name,
+        "champion_artifact": "models/champion_model.pkl",
+        "champion_hyperparameters": chosen[champion_name]["params"],
+        "operating_threshold": champion_threshold,
         "model_comparison": comparison_rows,
+        "baseline_agreement": baseline_agreement,
+        "selection": {"summary": "data/processed/model_selection_summary.csv",
+                      "decision": "data/processed/champion_decision.json"},
         "cost_optimal_threshold": {k: v for k, v in cost_result.items() if k != "sweep"},
         "n_train": len(X_train), "n_test": len(X_test),
         "n_features": len(feature_columns), "fraud_rate": float(y_train.mean()),
-        # SH-02 / D3: which variant actually shipped, and where to find
-        # the measured comparison against the other variant.
         "proxy_features": {
             "included_in_shipped_model": INCLUDE_PROXY_FEATURES,
             "risky_feature_columns": ["is_highrisk_hobby", "is_exec_occupation"],
             "ablation_report": "data/processed/proxy_feature_ablation.csv",
         },
-        # SH-04: where to find uncertainty for every reported number —
-        # cross-fold mean+-SD (cross_validation_results.csv, already
-        # produced above) and bootstrap 95% CI on the fixed holdout split
-        # (new this ticket).
         "uncertainty": {
             "cross_validation_mean_std": "data/processed/cross_validation_results.csv",
             "holdout_bootstrap_95ci": "data/processed/holdout_bootstrap_ci.csv",
@@ -402,23 +409,20 @@ def main():
     with open(MODELS_DIR / "metrics.json", "w") as f:
         json.dump(metrics, f, indent=2)
 
-    X_test_scaled.assign(y_true=y_test.values, y_proba=rf_proba_test).to_csv(PROCESSED_DIR / "risk_scores_test.csv", index=False)
-    # PB-10: a SEPARATE, UNSCALED snapshot of the test features, for PSI/
-    # drift comparisons only. risk_scores_test.csv's feature columns are
-    # StandardScaler-transformed (z-scores, mean~0/std~1) — comparing
-    # those against another dataset's RAW engineered features (e.g.
-    # X_oracle in evaluate_oracle.py) via PSI is an apples-to-oranges
-    # scale mismatch that produces meaningless, wildly inflated PSI
-    # values. See evaluate_oracle.py and docs/REBUILD_NOTES.md for the
-    # reproduction.
+    X_test_scaled.assign(y_true=y_test.values, y_proba=test_proba[champion_name]).to_csv(
+        PROCESSED_DIR / "risk_scores_test.csv", index=False)
     X_test.assign(y_true=y_test.values).to_csv(PROCESSED_DIR / "psi_reference_features.csv", index=False)
 
-    print(json.dumps({k: v for k, v in metrics.items() if k not in ("model_comparison",)}, indent=2))
     print()
-    print(model_comparison[["model", "threshold", "recall", "precision", "f1", "pr_auc", "roc_auc", "accuracy"]].to_string(index=False))
+    print("Nested CV on TRAIN (mean over folds):")
+    print(summary.round(3).to_string(index=False))
     print()
-    print("Cross-validation (5-fold):")
-    print(cv_df.to_string(index=False))
+    print(json.dumps({k: v for k, v in champion_decision.items() if k != "protocol"}, indent=2))
+    print()
+    print("Held-out TEST (reported once):")
+    print(pd.DataFrame(comparison_rows)[["model", "threshold", "recall", "precision", "f1", "pr_auc", "roc_auc", "flag_rate"]].round(3).to_string(index=False))
+    print()
+    print("Agreement with Major-Damage rule:", json.dumps(baseline_agreement))
 
 
 if __name__ == "__main__":

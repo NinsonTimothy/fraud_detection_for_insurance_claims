@@ -43,7 +43,9 @@ ORACLE_REAL_FIELDS = [
 
 def evaluate_shipped_model_on_oracle():
     scaler = joblib.load(MODELS_DIR / "standard_scaler.pkl")
-    rf_pipeline = joblib.load(MODELS_DIR / "random_forest_final.pkl")
+    # MS-01: evaluate the SHIPPED champion, whichever model won selection.
+    champion_path = MODELS_DIR / "champion_model.pkl"
+    rf_pipeline = joblib.load(champion_path if champion_path.exists() else MODELS_DIR / "random_forest_final.pkl")
     with open(MODELS_DIR / "feature_columns.json") as f:
         feature_columns = json.load(f)
     with open(MODELS_DIR / "metrics.json") as f:
@@ -98,10 +100,24 @@ def evaluate_shipped_model_on_oracle():
     psi_cols = [c for c in set(psi_cols) if c in internal_test.columns]
     psi_df = psi_report(internal_test, X_oracle, psi_cols) if psi_cols else pd.DataFrame()
 
+    primary = internal_metrics.get("primary_model", "random_forest")
+    primary_row = next(r for r in internal_metrics["model_comparison"] if r["model"] == primary)
+    # OR-01: the one-word verdict is DERIVED from the CI, never typed. The
+    # earlier docs called the result "random"; with a CI entirely below 0.5
+    # that is wrong — the ranking is significantly inverted.
+    roc_ci = oracle_ci.get("roc_auc", {})
+    if roc_ci and roc_ci["ci_upper"] < 0.5:
+        verdict = "significantly_inverted"
+    elif roc_ci and roc_ci["ci_lower"] > 0.5:
+        verdict = "better_than_random_but_degraded"
+    else:
+        verdict = "indistinguishable_from_random"
     report = {
+        "model": primary,
+        "roc_auc_verdict": verdict,
         "internal_holdout_metrics": {
-            "roc_auc": internal_metrics["model_comparison"][0]["roc_auc"],
-            "pr_auc": internal_metrics["model_comparison"][0]["pr_auc"],
+            "roc_auc": primary_row["roc_auc"],
+            "pr_auc": primary_row["pr_auc"],
         },
         "oracle_metrics": {
             "roc_auc": float(roc), "pr_auc": float(pr), "recall": float(recall), "precision": float(precision),
