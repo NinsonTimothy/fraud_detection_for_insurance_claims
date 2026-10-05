@@ -153,18 +153,7 @@ SAMPLES_DIR = PROJECT_ROOT / "data" / "samples"
 
 
 def oracle_roc_verdict(roc: float, ci: dict | None) -> tuple[str, str]:
-    """OR-01: ONE place that words the Oracle ROC-AUC result, driven by the
-    bootstrap CI rather than a hardcoded word. Returns (short, long)."""
-    if ci:
-        lo, hi = ci["ci_lower"], ci["ci_upper"]
-        if hi < 0.5:
-            return ("significantly inverted",
-                    f"ranking is significantly INVERTED — ROC-AUC {roc:.3f}, 95% CI [{lo:.3f}, {hi:.3f}] lies entirely "
-                    "below 0.5, so on Oracle the model systematically gives genuine fraud cases slightly LOWER scores "
-                    "than legitimate claims. This is worse than random, not merely random")
-        if lo > 0.5:
-            return ("better than random but degraded",
-                    f"ranking is better than random but degraded — ROC-AUC {roc:.3f}, 95% CI [{lo:.3f}, {hi:.3f}]")
-        return ("indistinguishable from random",
-                f"ranking is indistinguishable from random — ROC-AUC {roc:.3f}, 95% CI [{lo:.3f}, {hi:.3f}] contains 0.5")
-    return ("degraded", f"ROC-AUC {roc:.3f} (no confidence interval available)")
+    """OR-01: delegates to the backend's single wording function so the
+    dashboard and the generated docs can never disagree."""
+    from app.ml.reporting import roc_ci_verdict
+    return roc_ci_verdict(roc, ci)

@@ -1,116 +1,122 @@
 """
-generate_thesis_numbers.py — produces docs/THESIS_NUMBERS.md: every number
-the thesis (Project_documentation_updated.docx, Sept 2026) quotes, its OLD
-value, and its NEW value read from the current artifacts.
+generate_thesis_numbers.py — E5: writes docs/THESIS_UPDATE_NOTES.md, listing
+every number, table and claim in Chapters 3–5 of the thesis that changes,
+as OLD -> NEW with the artifact the new value comes from.
 
-OLD values are historical facts about what the thesis currently says, so
-they are listed here as constants. NEW values are always computed from
-models/metrics.json, data/processed/*, data/external/oracle/* — never typed.
-
-Run (from backend/): python -m app.ml.generate_thesis_numbers
+OLD values are what the Sept 2026 thesis (Project_documentation_updated.docx)
+says — historical facts, so they are constants here. NEW values are ALWAYS
+read from artifacts. Run: python -m app.ml.generate_thesis_numbers
 """
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from app.ml.reporting import roc_ci_verdict
 from app.ml.risk_policy import grade_for_array
 
 ROOT = Path(__file__).resolve().parents[3]
-P = ROOT / "data" / "processed"
-M = ROOT / "models"
-O = ROOT / "data" / "external" / "oracle"
+P, M, O = ROOT / "data" / "processed", ROOT / "models", ROOT / "data" / "external" / "oracle"
 
 
-def _pct(x):
-    return f"{x * 100:.1f}%"
-
-
-def _count_tests() -> str:
-    counts = []
-    for d in ("backend", "dashboard"):
-        try:
-            out = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q"], cwd=ROOT / d,
-                                 capture_output=True, text=True, timeout=300).stdout
-            line = [l for l in out.splitlines() if "collected" in l or "tests" in l][-1]
-            counts.append(f"{d}: {line.strip()}")
-        except Exception as e:  # pragma: no cover
-            counts.append(f"{d}: could not count ({e})")
-    return "; ".join(counts)
+def _pct(x): return f"{x * 100:.1f}%"
 
 
 def build() -> str:
-    m = json.load(open(M / "metrics.json"))
-    dec = json.load(open(P / "champion_decision.json"))
-    orc = json.load(open(O / "oracle_validation_report.json"))
-    tests = pd.read_csv(P / "champion_pairwise_tests.csv")
-    shap = pd.read_csv(P / "shap_feature_importance.csv")
-    rs = pd.read_csv(P / "risk_scores_test.csv")
-    champ = m["primary_model"]
+    m = json.load(open(M / "metrics.json")); dec = json.load(open(P / "champion_decision.json"))
+    orc = json.load(open(O / "oracle_validation_report.json")); pol = json.load(open(M / "risk_policy.json"))
     rows = {r["model"]: r for r in m["model_comparison"]}
-    c = rows[champ]
+    champ = m["primary_model"]; c = rows[champ]
+    rs = pd.read_csv(P / "risk_scores_test.csv"); y = rs["y_true"].to_numpy(); s = rs["y_proba"].to_numpy()
+    high = grade_for_array(s, pol) == "High"; flagged = s >= m["operating_threshold"]
+    fi = pd.read_csv(P / "shap_importance_by_field.csv").set_index("source_field")["share_of_total"]
+    cost = pd.read_csv(P / "cost_sensitivity.csv"); ab = pd.read_csv(P / "proxy_feature_ablation.csv").set_index("variant")
+    pt = pd.read_csv(P / "pairwise_tests.csv")
+    oci = orc["oracle_metrics_ci"]["roc_auc"]; verdict, _ = roc_ci_verdict(orc["oracle_metrics"]["roc_auc"], oci)
 
-    grades = grade_for_array(rs["y_proba"].to_numpy())
-    y = rs["y_true"].to_numpy()
-    high = grades == "High"
-    flagged = rs["y_proba"].to_numpy() >= m["operating_threshold"]
-    sev_share = shap.loc[shap["feature"].isin(["is_major_damage", "incident_severity_ordinal"]), "share_of_total"].sum()
-    oci = orc["oracle_metrics_ci"]["roc_auc"]
-    vs_rule = tests[(tests.vs == "major_damage_rule") & (tests.metric == "f1")].iloc[0]
-    vs_lr_rec = tests[(tests.vs == "logistic_regression") & (tests.metric == "recall")].iloc[0]
-    vs_lr_f1 = tests[(tests.vs == "logistic_regression") & (tests.metric == "f1")].iloc[0]
+    def p_of(a, b, metric):
+        r = pt[(((pt.a == a) & (pt.b == b)) | ((pt.a == b) & (pt.b == a))) & (pt.metric == metric)]
+        return f"{float(r.iloc[0]['p_corrected']):.3f}" if len(r) else "—"
 
-    L = ["# Thesis number update sheet (auto-generated — do not hand-edit)", "",
-         "OLD = what `Project_documentation_updated.docx` currently says. NEW = read from the artifacts on disk "
-         "when this file was generated (`python -m app.ml.generate_thesis_numbers`). Section numbers follow the "
-         "Sept 2026 rewrite.", "",
-         "| Thesis location | What | OLD | NEW |", "|---|---|---|---|"]
-    add = lambda loc, what, old, new: L.append(f"| {loc} | {what} | {old} | {new} |")
-    add("3.4.1 / Abstract", "Engineered feature count", "70", str(m["n_features"]))
-    add("3.3.6", "`is_no_witness` feature", "included", "removed (dataset artefact — see LIMITATIONS)")
-    add("3.5", "Champion selection data", "paired 5-fold CV on all 1,000 rows", dec["protocol"]["data"])
-    add("3.5", "Selection CV design", "5 folds, fixed 0.5 threshold", f"{dec['protocol']['outer_cv']}; {dec['protocol']['inner_cv']}")
-    add("3.5", "Baseline", "none", "one-line rule: flag if incident_severity = Major Damage")
-    add("3.5 / 4.2", "Significance test", "paired t-test, 4 df", dec["protocol"]["significance_test"])
-    add("4.2", "RF vs LR recall p-value", "0.0086 (stale, hardcoded)", f"{vs_lr_rec['p_corrected']:.3f} (not significant)")
-    add("4.2", "RF vs LR F1 p-value", "0.0166", f"{vs_lr_f1['p_corrected']:.3f} ({'significant' if vs_lr_f1['significant_at_0_05'] else 'not significant'})")
-    add("4.2 (new)", "Champion vs rule, F1 difference / p", "—", f"{vs_rule['mean_difference']:+.3f} / {vs_rule['p_corrected']:.3f}")
-    add("4.2 (new)", "Nested-CV F1: champion vs rule", "—", f"{dec['champion_cv']['f1_mean']:.3f} vs {dec['baseline_cv']['f1_mean']:.3f}")
-    add("4.2 (new)", "Test decisions identical to rule", "—", _pct(m["baseline_agreement"]["test_decision_agreement"]))
-    add("Table 4.1", f"Champion", "Random Forest", champ)
-    add("Table 4.1", "Operating threshold", "0.44", f"{m['operating_threshold']:.2f}")
-    add("Table 4.1", "Champion F1 / Recall / Precision", "0.679 / 73.5% / 63.2%", f"{c['f1']:.3f} / {_pct(c['recall'])} / {_pct(c['precision'])}")
-    add("Table 4.1", "Champion ROC-AUC / PR-AUC", "0.794 / 0.545", f"{c['roc_auc']:.3f} / {c['pr_auc']:.3f}")
-    for name in ("logistic_regression", "xgboost", "major_damage_rule"):
-        r = rows[name]
-        add("Table 4.1", f"{name}: thr / F1 / Recall / ROC-AUC", "see old table" if name != "major_damage_rule" else "— (new row)",
-            f"{r['threshold']:.2f} / {r['f1']:.3f} / {_pct(r['recall'])} / {r['roc_auc']:.3f}")
-    add("4.4", "Oracle ROC-AUC (95% CI)", "0.463 (0.443–0.481)", f"{orc['oracle_metrics']['roc_auc']:.3f} ({oci['ci_lower']:.3f}–{oci['ci_upper']:.3f})")
-    add("4.4", "Oracle wording", "random / indistinguishable from random", orc.get("roc_auc_verdict", "").replace("_", " "))
-    add("4.4", "SHAP weight constant on Oracle", "91.7%", _pct(orc["share_of_shap_weight_constant_on_oracle"]))
-    add("4.5", "SHAP share: is_major_damage + incident_severity_ordinal", "58.8%", _pct(sev_share))
-    add("4.6", "High band: share of test claims", "26.5%", _pct(high.mean()))
-    add("4.6", "High band: share of fraud captured", "67.3%", _pct(y[high].sum() / max(1, y.sum())))
-    add("4.6", "Claims flagged at operating threshold / recall", "57 / 73.5%", f"{int(flagged.sum())} / {_pct(y[flagged].sum() / max(1, y.sum()))}")
-    add("3.6", "Low band action wording", "auto-approved", "recommend standard claims handling — handler decides")
-    add("3.8", "Test count", "153", _count_tests())
-    L += ["", "Text changes that go with the numbers:", "",
-          "- Ch. 4/5: state plainly that no ML model beat the Major-Damage rule on F1; the model's contribution is ranking within groups and explanation.",
-          "- Ch. 4.4 / 5: replace every 'random' description of Oracle with 'significantly inverted (95% CI entirely below 0.5)'.",
-          "- Ch. 5 Limitations: add the witness artefact paragraph from docs/LIMITATIONS.md.",
-          "- Ch. 3.6/3.7: decision-support wording — the system recommends, the investigator decides.",
-          "- Ch. 3.5: describe the earlier test-set leak in model selection and how it was fixed.", ""]
-    return "\n".join(L)
+    T = []
+    def add(sec, what, old, new, src):
+        T.append(f"| {sec} | {what} | {old} | {new} | `{src}` |")
+
+    add("3.4", "Engineered features", "70", m["n_features"], "models/metrics.json")
+    add("3.3.6", "`is_no_witness`", "included", "removed (contradicts data; see LIMITATIONS)", "feature_engineering.py")
+    add("3.4", "Imbalance handling", "SMOTE + class weighting", "class weighting only", "smote_vs_classweight_comparison.csv")
+    add("3.5", "Selection data", "CV over all 1,000 rows (test leaked)", dec["protocol"]["data"], "champion_decision.json")
+    add("3.5", "CV design", "5-fold, single run", dec["protocol"]["cv"], "champion_decision.json")
+    add("3.5", "Thresholds in comparison", "RF 0.44 vs LR/XGB 0.5", dec["protocol"]["thresholds"], "champion_decision.json")
+    add("3.5", "Significance test", "paired t-test (4 df)", dec["protocol"]["significance_test"], "champion_decision.json")
+    add("3.5", "Selection rule", "Recall > F1 hierarchy; RF hardcoded", dec["protocol"]["selection_rule"], "champion_decision.json")
+    add("3.5", "Baseline", "none", "rule: incident_severity == Major Damage", "model_selection.py")
+    add("3.5/4.2", "Champion", "Random Forest", champ, "models/metrics.json")
+    add("3.5", "Calibration", "none (scores called probabilities)", m["calibration"]["chosen"], "calibration_summary.csv")
+    add("3.6", "Risk bands", "fixed 0.30 / 0.60", f"{pol['medium_edge']:.3f} / {pol['high_edge']:.3f} (derived)", "models/risk_policy.json")
+    add("3.6", "Review threshold", "0.44", f"{m['operating_threshold']:.2f}", "models/metrics.json")
+    add("3.6", "Cost-optimal threshold", "0.07 (presented as optimal)",
+        f"sensitivity grid: {cost['threshold'].min():.2f}–{cost['threshold'].max():.2f} over {len(cost)} assumption sets",
+        "cost_sensitivity.csv")
+    add("3.6", "Low-band action", "No action — auto-approved", "Low priority — standard processing; an investigator may still review", "risk_policy.py")
+    add("4.2", "RF vs LR recall p", "0.0086 (stale, hardcoded)", p_of("random_forest", "logistic_regression", "recall"), "pairwise_tests.csv")
+    add("4.2", "RF vs LR F1 p", "0.0166", p_of("random_forest", "logistic_regression", "f1"), "pairwise_tests.csv")
+    for met in ("pr_auc", "recall", "f1"):
+        r = dec["champion_vs_rule"][met]
+        add("4.2 (new)", f"Champion minus rule, {met}", "—", f"{r['mean_difference']:+.3f}, p = {r['p_corrected']:.3f}", "champion_decision.json")
+    add("Table 4.1", "Champion threshold / recall / precision / F1", "RF 0.44 / 73.5% / 63.2% / 0.679",
+        f"{champ} {c['threshold']:.2f} / {_pct(c['recall'])} / {_pct(c['precision'])} / {c['f1']:.3f}", "model_comparison.csv")
+    add("Table 4.1", "Champion PR-AUC / ROC-AUC", "0.545 / 0.794", f"{c['pr_auc']:.3f} / {c['roc_auc']:.3f}", "model_comparison.csv")
+    for n in [k for k in rows if k != champ]:
+        r = rows[n]
+        add("Table 4.1", f"{n}: thr / F1 / PR-AUC / ROC-AUC", "—" if n == "major_damage_rule" else "see thesis",
+            f"{r['threshold']:.2f} / {r['f1']:.3f} / {r['pr_auc']:.3f} / {r['roc_auc']:.3f}", "model_comparison.csv")
+    add("4.3 (new)", "Champion test Brier / ECE", "not reported", f"{c['test_brier']:.3f} / {c['test_ece']:.3f}", "model_comparison.csv")
+    add("4.2.4", "Proxy ablation PR-AUC off -> on", "holdout comparison (used test set)",
+        f"{ab.loc['proxy_features_off', 'pr_auc_mean']:.3f} -> {ab.loc['proxy_features_on', 'pr_auc_mean']:.3f} (dev CV)",
+        "proxy_feature_ablation.csv")
+    add("4.4", "Oracle ROC-AUC (95% CI)", "0.463 (0.443–0.481)",
+        f"{orc['oracle_metrics']['roc_auc']:.3f} ({oci['ci_lower']:.3f}–{oci['ci_upper']:.3f})", "oracle_validation_report.json")
+    add("4.4", "Oracle wording", "random", verdict, "reporting.roc_ci_verdict")
+    add("4.4", "Oracle fields mapped", "7 or 10 (inconsistent)", str(orc["field_mapping_counts"]), "oracle_field_mapping.csv")
+    add("4.4", "SHAP weight constant on Oracle", "91.7%", _pct(orc["share_of_shap_weight_constant_on_oracle"]), "oracle_validation_report.json")
+    add("4.5", "SHAP share of incident severity", "58.8% (two columns)", _pct(fi.get("incident_severity", np.nan)), "shap_importance_by_field.csv")
+    add("4.6", "High band: share of test claims / of fraud", "26.5% / 67.3%",
+        f"{_pct(high.mean())} / {_pct(y[high].sum() / max(1, y.sum()))}", "risk_scores_test.csv + risk_policy.json")
+    add("4.6", "Claims flagged at review threshold / recall", "57 / 73.5%",
+        f"{int(flagged.sum())} / {_pct(y[flagged].sum() / max(1, y.sum()))}", "risk_scores_test.csv")
+    add("4.6", "Test decisions identical to rule", "100% (not reported)",
+        _pct(m["baseline_agreement"]["test_decision_agreement"]), "models/metrics.json")
+
+    head = ["# Thesis update notes (auto-generated — do not hand-edit)", "",
+            "Every number, table and claim in Chapters 3–5 that changes because of the pre-defence round-2 work. "
+            "OLD = the Sept 2026 thesis. NEW = read from the named artifact by `python -m app.ml.generate_thesis_numbers`.", "",
+            "| Section | What | OLD | NEW | Source artifact |", "|---|---|---|---|---|"]
+    tail = ["", "## Claims to rewrite (not just numbers)", "",
+            f"- **Champion.** The champion is `{champ}`, selected by a rule written in code before results "
+            "(best PR-AUC unless a simpler model is not significantly worse). Remove wording that presents "
+            "Random Forest as the measured winner.",
+            "- **Rule baseline.** State plainly what `champion_decision.json` says under "
+            "`champion_significantly_beats_rule_on` and `rule_significantly_beats_champion_on`.",
+            "- **Scores** are calibrated fraud-risk scores reported with Brier and ECE; say 'fraud-risk score' throughout.",
+            f"- **Oracle.** Replace 'random' with the CI-derived verdict ('{verdict}'); add the field-mapping and univariate-AUC tables.",
+            "- **Witnesses.** Add the fraud-rate-by-witnesses table to Limitations as a dataset artefact.",
+            "- **Cost model.** Present the cost threshold as a sensitivity analysis under stated assumptions, not an optimum.",
+            "- **Leakage.** Describe the test-set leak in model selection, proxy ablation and threshold choice, and its fix.",
+            "- **Decision support.** The system recommends a priority; investigators decide. No auto-approval anywhere.",
+            "- **Calibration rule amendment.** Disclose that the isotonic/sigmoid preference was amended after the first run."]
+    return "\n".join(head + T + tail) + "\n"
 
 
 def main():
     text = build()
-    (ROOT / "docs" / "THESIS_NUMBERS.md").write_text(text)
+    (ROOT / "docs" / "THESIS_UPDATE_NOTES.md").write_text(text)
+    old = ROOT / "docs" / "THESIS_NUMBERS.md"
+    if old.exists():
+        old.unlink()
     print(text)
 
 

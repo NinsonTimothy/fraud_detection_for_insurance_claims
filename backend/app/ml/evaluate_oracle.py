@@ -34,11 +34,47 @@ MODELS_DIR = PROJECT_ROOT / "models"
 PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 EXTERNAL_DIR = PROJECT_ROOT / "data" / "external" / "oracle"
 
-# Raw columns Oracle genuinely supplies for real (see oracle_adapter.py docstring)
-ORACLE_REAL_FIELDS = [
-    "age", "insured_sex", "policy_deductable", "police_report_available",
-    "witnesses", "number_of_vehicles_involved", "auto_year",
+# B8: ONE field-mapping table (raw field -> Oracle source, fidelity). Every
+# count quoted anywhere is derived from this list, never typed. It mirrors
+# oracle_adapter.map_oracle_to_raw_schema() exactly (asserted by a test).
+FIELD_MAPPING = [
+    ("age", "Age", "direct"),
+    ("insured_sex", "Sex", "direct"),
+    ("policy_deductable", "Deductible", "direct"),
+    ("police_report_available", "PoliceReportFiled", "direct"),
+    ("witnesses", "WitnessPresent (Yes/No -> 1/0; not a count)", "approximate"),
+    ("number_of_vehicles_involved", "NumberOfCars (bucketed)", "approximate"),
+    ("incident_date", "Year + MonthClaimed + WeekOfMonthClaimed", "approximate"),
+    ("auto_year", "incident year - AgeOfVehicle (bucketed)", "approximate"),
+    ("policy_bind_date", "incident_date - Days_Policy_Claim (bucketed)", "approximate"),
 ]
+ORACLE_REAL_FIELDS = [f for f, _, _ in FIELD_MAPPING]
+
+
+def field_mapping_table() -> pd.DataFrame:
+    from app.ml.feature_engineering import RAW_FEATURE_COLUMNS
+    mapped = {f: (src, fid) for f, src, fid in FIELD_MAPPING}
+    return pd.DataFrame([{"raw_field": c, "oracle_source": mapped.get(c, ("—", "unmappable"))[0],
+                          "fidelity": mapped.get(c, ("—", "unmappable"))[1]} for c in RAW_FEATURE_COLUMNS])
+
+
+def univariate_auc_table(X_oracle: pd.DataFrame, y_oracle: pd.Series, variable_cols: list[str]) -> pd.DataFrame:
+    """For every feature that still VARIES on Oracle: its univariate ROC-AUC
+    on the development data and on Oracle. AUC near 0.5 on development data
+    means the feature carried no signal to transfer in the first place;
+    opposite sides of 0.5 mean the relationship reverses between datasets."""
+    from app.ml.train import build_features, split_with_ids
+    dev_df, test_df, y_dev, _ = split_with_ids()
+    X_dev, _ = build_features(dev_df, test_df)
+    rows = []
+    for c in variable_cols:
+        if c not in X_dev.columns or X_dev[c].nunique() < 2:
+            continue
+        a_dev = roc_auc_score(y_dev, X_dev[c].astype(float))
+        a_or = roc_auc_score(y_oracle, X_oracle[c].astype(float))
+        rows.append({"feature": c, "auc_development": a_dev, "auc_oracle": a_or,
+                     "direction_reverses": bool((a_dev - 0.5) * (a_or - 0.5) < 0)})
+    return pd.DataFrame(rows).sort_values("auc_development")
 
 
 def evaluate_shipped_model_on_oracle():
@@ -112,8 +148,14 @@ def evaluate_shipped_model_on_oracle():
         verdict = "better_than_random_but_degraded"
     else:
         verdict = "indistinguishable_from_random"
+    variable_cols = sorted(set(X_oracle.columns) - constant_cols)
+    univariate_auc_table(X_oracle, y_oracle, variable_cols).to_csv(EXTERNAL_DIR / "oracle_univariate_auc.csv", index=False)
+    mapping = field_mapping_table()
+    mapping.to_csv(EXTERNAL_DIR / "oracle_field_mapping.csv", index=False)
     report = {
         "model": primary,
+        "field_mapping_counts": mapping["fidelity"].value_counts().to_dict(),
+        "n_features_variable_on_oracle": len(variable_cols),
         "roc_auc_verdict": verdict,
         "internal_holdout_metrics": {
             "roc_auc": primary_row["roc_auc"],
