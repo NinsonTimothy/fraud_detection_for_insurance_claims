@@ -18,7 +18,7 @@ if _dashboard_root not in sys.path:
     sys.path.append(_dashboard_root)
 from components.data_access import (
     load_oracle_model_comparison, load_oracle_psi, load_oracle_report,
-    models_are_available, oracle_results_available,
+    models_are_available, oracle_results_available, oracle_roc_verdict,
 )
 from components.theme import ACCENT, DANGER, MUTED, SUCCESS, WARNING, inject_css, page_header
 
@@ -36,17 +36,23 @@ if not oracle_results_available():
 report = load_oracle_report()
 internal = report["internal_holdout_metrics"]
 oracle = report["oracle_metrics"]
-roc_is_random = abs(oracle["roc_auc"] - 0.5) < 0.05
+# OR-01: the headline wording is derived from the bootstrap CI, never from
+# a fixed "within 0.05 of 0.5" rule. With a CI entirely below 0.5 the
+# correct description is "significantly inverted", not "random".
+short_verdict, long_verdict = oracle_roc_verdict(oracle["roc_auc"], (report.get("oracle_metrics_ci") or {}).get("roc_auc"))
 
 st.markdown(
-    f"""<div class="aeg-note" style="border-color:{DANGER if roc_is_random else WARNING}55;background:{DANGER if roc_is_random else WARNING}14;">
-    <b>{'Statistically indistinguishable from random' if roc_is_random else 'Meaningfully worse'} on Oracle.</b>
-    ROC-AUC drops from {internal['roc_auc']:.3f} (internal holdout) to <b>{oracle['roc_auc']:.3f}</b> on Oracle.
+    f"""<div class="aeg-note" style="border-color:{DANGER}55;background:{DANGER}14;">
+    <b>Oracle result: {short_verdict}.</b> The {long_verdict}.
+    ROC-AUC is {internal['roc_auc']:.3f} on the internal holdout.
     {report['n_features_constant_on_oracle']} of {report['n_features_total']} trained features
     ({report['share_of_shap_weight_constant_on_oracle']:.1%} of total SHAP weight) go completely
-    constant once Oracle-mapped data passes through — Oracle has no ZIP code, no incident-severity field,
-    and no claim-dollar breakdown, so the model's three heaviest-weighted feature groups are simply
-    unavailable here. See "Root cause" below.</div>""",
+    constant once Oracle-mapped data passes through — Oracle has no incident-severity field and no
+    claim-dollar breakdown, so the model's heaviest-weighted features are frozen at their defaults and
+    the few fields that do vary decide the ranking. A likely reason it is inverted rather than random:
+    witnesses relate to fraud in the OPPOSITE direction on Oracle (a witness present: 3.4% fraud vs. 6.0%
+    without) to this project's training data (more witnesses, slightly more fraud — a dataset artefact).
+    See "Root cause" below.</div>""",
     unsafe_allow_html=True,
 )
 
@@ -67,14 +73,14 @@ with tab1:
                      color_discrete_map={True: DANGER, False: ACCENT}, labels={"psi": "PSI"})
         fig.add_vline(x=0.2, line_dash="dash", line_color=WARNING, annotation_text="critical (0.2)")
         fig.update_layout(showlegend=False, height=max(300, 26 * len(psi_df)), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e6e8ef")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     st.caption("Population Stability Index on the few fields Oracle genuinely supplies (age, sex, deductible, witnesses, vehicle count/year). Every other feature this model relies on is constant on Oracle by construction — not shown here because a PSI on a constant is meaningless, not because it's fine.")
 
 with tab2:
     stress_df = load_oracle_model_comparison()
     if len(stress_df):
         st.markdown("Fresh models trained **directly on Oracle's own real fields** (not this project's model):")
-        st.dataframe(stress_df, use_container_width=True, hide_index=True)
+        st.dataframe(stress_df, width="stretch", hide_index=True)
         st.markdown(
             f"""<div class="aeg-note" style="background:{SUCCESS}14;border-color:{SUCCESS}55;">
             Oracle IS learnable fraud data — a fresh XGBoost model reaches
@@ -89,4 +95,4 @@ with tab3:
     st.markdown(f"**Fields mapped from Oracle for real:** `{'`, `'.join(report['fields_mapped_for_real'])}`")
     st.caption("Every other raw field falls back to its documented default (feature_engineering.MISSING_COLUMN_DEFAULTS) — nothing invented to move the score either way, same honest-mapping rule as the sibling MoMo Guard project's PaySim adapter.")
     st.write("")
-    st.caption(f"Model: {report.get('fields_mapped_for_real') and 'random_forest'} · Generated {report['generated_at'][:19].replace('T',' ')} UTC · Regenerate with `python -m app.ml.evaluate_oracle`.")
+    st.caption(f"Model: {report.get('model', 'random_forest')} · Generated {report['generated_at'][:19].replace('T',' ')} UTC · Regenerate with `python -m app.ml.evaluate_oracle`.")

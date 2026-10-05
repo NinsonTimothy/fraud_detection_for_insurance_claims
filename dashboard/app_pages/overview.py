@@ -16,8 +16,8 @@ if _dashboard_root not in sys.path:
     # the backend's app/ package (see components/data_access.py,
     # which puts backend/ at sys.path[0] once, on first import).
     sys.path.append(_dashboard_root)
-from components.data_access import bootstrap_ci_for, load_bootstrap_ci, load_cross_validation, load_metrics, load_model_comparison, models_are_available, oracle_results_available, load_oracle_report
-from components.theme import inject_css, kpi_card, page_header, MUTED, DANGER
+from components.data_access import bootstrap_ci_for, load_bootstrap_ci, load_champion_decision, load_cross_validation, load_metrics, load_model_comparison, models_are_available, oracle_results_available, oracle_roc_verdict, load_oracle_report
+from components.theme import inject_css, kpi_card, page_header, MUTED, DANGER, WARNING
 
 inject_css()
 page_header("Overview", "Real, reproducible metrics from the last training run — nothing here is a fabricated production number.")
@@ -28,7 +28,9 @@ if not models_are_available():
 
 metrics = load_metrics()
 comparison = load_model_comparison()
-rf_row = comparison[comparison["model"] == "random_forest"].iloc[0]
+# MS-01: the shipped model is whichever candidate won leak-free selection.
+CHAMPION = metrics.get("primary_model", "random_forest")
+rf_row = comparison[comparison["model"] == CHAMPION].iloc[0]
 
 # SH-04: every headline number below is a single point estimate off ONE
 # fixed 200-row holdout split — attach a bootstrap 95% CI (resampling the
@@ -38,17 +40,18 @@ rf_row = comparison[comparison["model"] == "random_forest"].iloc[0]
 # for why these are two different, both-worth-reporting questions).
 bootstrap_df = load_bootstrap_ci()
 cv_df = load_cross_validation()
-cv_row = cv_df[cv_df["model"] == "random_forest"]
+cv_row = cv_df[cv_df["model"] == CHAMPION]
 cv_row = cv_row.iloc[0] if not cv_row.empty else None
 
 
 def _ci_caption(metric: str, base: str) -> str:
-    ci = bootstrap_ci_for(bootstrap_df, "random_forest", metric) if not bootstrap_df.empty else None
+    ci = bootstrap_ci_for(bootstrap_df, CHAMPION, metric) if not bootstrap_df.empty else None
     if ci is None:
         return base
     return f"{base} · 95% CI [{ci[0]:.3f}, {ci[1]:.3f}]"
 
 
+st.caption(f"Shipped model: **{CHAMPION}** (selected on the training split only — see Model insights → Model selection).")
 c1, c2, c3, c4 = st.columns(4)
 with c1:
     kpi_card("Internal test ROC-AUC", f"{rf_row['roc_auc']:.3f}", _ci_caption("roc_auc", f"n_test={metrics['n_test']}"))
@@ -61,11 +64,30 @@ with c4:
 
 if cv_row is not None:
     st.caption(
-        f"5-fold CV (refit per fold, a different source of uncertainty — how much this moves across "
+        f"Nested CV on the TRAINING split only (15 paired folds, refit per fold, a different source of uncertainty — how much this moves across "
         f"different TRAINING splits, not just different samples of this one test set): "
+        f"F1 {cv_row['f1_mean']:.3f}±{cv_row['f1_std']:.3f} · "
         f"ROC-AUC {cv_row['roc_auc_mean']:.3f}±{cv_row['roc_auc_std']:.3f} · "
-        f"recall {cv_row['recall_mean']:.3f}±{cv_row['recall_std']:.3f} · "
-        f"F1 {cv_row['f1_mean']:.3f}±{cv_row['f1_std']:.3f}. Full table on the Model insights page."
+        f"recall {cv_row['recall_mean']:.3f}±{cv_row['recall_std']:.3f}. Full table on the Model insights page."
+    )
+
+decision = load_champion_decision()
+ba = metrics.get("baseline_agreement")
+if decision and ba:
+    vs = decision.get("champion_vs_baseline", {}).get("f1") or {}
+    st.markdown(
+        f"""<div class="aeg-note" style="border-color:{WARNING}55;background:{WARNING}14;">
+        <b>Baseline check — a key finding, shown on purpose.</b> A one-line rule
+        (<i>flag if incident severity = "Major Damage"</i>) scores F1 {decision['baseline_cv']['f1_mean']:.3f} in
+        nested CV vs. {decision['champion_cv']['f1_mean']:.3f} for {CHAMPION}
+        (difference {vs.get('mean_difference', 0):+.3f}, corrected p = {vs.get('p_corrected', float('nan')):.2f}).
+        {'No ML model beat this rule.' if not decision.get('beats_or_matches_baseline_on_f1') else 'The champion matches or beats it.'}
+        On the test set the shipped model's review/no-review decision is identical to the rule for
+        <b>{ba['test_decision_agreement']:.0%}</b> of {ba['n_test']} claims. What the model adds is a
+        <b>ranking</b> within each group (PR-AUC {decision['champion_cv']['pr_auc_mean']:.3f} vs.
+        {decision['baseline_cv']['pr_auc_mean']:.3f}) and a per-claim <b>explanation</b>, not a better
+        flag decision.</div>""",
+        unsafe_allow_html=True,
     )
 
 st.write("")
@@ -77,13 +99,13 @@ if oracle_results_available():
     # — 15,420 rows is large, but the collapse itself is worth an interval.
     oracle_roc_ci = (oracle.get("oracle_metrics_ci") or {}).get("roc_auc")
     ci_text = f" (95% CI [{oracle_roc_ci['ci_lower']:.3f}, {oracle_roc_ci['ci_upper']:.3f}])" if oracle_roc_ci else ""
+    _short, long_text = oracle_roc_verdict(roc, oracle_roc_ci)
     st.markdown(
         f"""<div class="aeg-note" style="border-color:{DANGER}55;background:{DANGER}14;">
         <b>⚠ External validation warning — deliberately not hidden.</b><br/>
         Scored against Oracle (a real, independently-collected 15,420-row auto-insurance-fraud dataset
-        this model never trained on), ROC-AUC drops to <b>{roc:.3f}</b>{ci_text} — statistically indistinguishable
-        from random ({'≈0.50' if abs(roc-0.5) < 0.05 else ''}). See the "Monitoring & external validation"
-        page for the full breakdown and root cause.</div>""",
+        this model never trained on), the model's {long_text}. See the "Monitoring & external validation"
+        page for the root cause.</div>""",
         unsafe_allow_html=True,
     )
 else:
@@ -100,7 +122,7 @@ if not bootstrap_df.empty:
             ),
             axis=1,
         )
-st.dataframe(display_comparison, use_container_width=True, hide_index=True)
+st.dataframe(display_comparison, width="stretch", hide_index=True)
 st.caption(
     "`_95ci` columns are bootstrap 95% confidence intervals on this fixed holdout split "
     "(`data/processed/holdout_bootstrap_ci.csv`) — not the same as the cross-fold mean±SD above."

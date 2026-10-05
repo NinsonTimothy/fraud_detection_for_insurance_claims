@@ -52,7 +52,7 @@ def new_db_session():
 
 
 def models_are_available() -> bool:
-    return (MODELS_DIR / "random_forest_final.pkl").exists()
+    return (MODELS_DIR / "champion_model.pkl").exists() or (MODELS_DIR / "random_forest_final.pkl").exists()
 
 
 @st.cache_data
@@ -118,3 +118,53 @@ def load_oracle_psi() -> pd.DataFrame:
 def load_oracle_model_comparison() -> pd.DataFrame:
     path = PROCESSED_DIR / "oracle_model_comparison.csv"
     return pd.read_csv(path) if path.exists() else pd.DataFrame()
+
+
+@st.cache_data
+def load_field_importance() -> pd.DataFrame:
+    """SHAP importance grouped back to original claim fields (one-hot
+    dummies summed) — written by train.py."""
+    path = PROCESSED_DIR / "shap_importance_by_field.csv"
+    return pd.read_csv(path) if path.exists() else pd.DataFrame()
+
+
+@st.cache_data
+def load_champion_decision() -> dict:
+    path = PROCESSED_DIR / "champion_decision.json"
+    if not path.exists():
+        return {}
+    with open(path) as f:
+        return json.load(f)
+
+
+@st.cache_data
+def load_selection_summary() -> pd.DataFrame:
+    path = PROCESSED_DIR / "model_selection_summary.csv"
+    return pd.read_csv(path) if path.exists() else pd.DataFrame()
+
+
+@st.cache_data
+def load_pairwise_tests() -> pd.DataFrame:
+    path = PROCESSED_DIR / "champion_pairwise_tests.csv"
+    return pd.read_csv(path) if path.exists() else pd.DataFrame()
+
+
+SAMPLES_DIR = PROJECT_ROOT / "data" / "samples"
+
+
+def oracle_roc_verdict(roc: float, ci: dict | None) -> tuple[str, str]:
+    """OR-01: ONE place that words the Oracle ROC-AUC result, driven by the
+    bootstrap CI rather than a hardcoded word. Returns (short, long)."""
+    if ci:
+        lo, hi = ci["ci_lower"], ci["ci_upper"]
+        if hi < 0.5:
+            return ("significantly inverted",
+                    f"ranking is significantly INVERTED — ROC-AUC {roc:.3f}, 95% CI [{lo:.3f}, {hi:.3f}] lies entirely "
+                    "below 0.5, so on Oracle the model systematically gives genuine fraud cases slightly LOWER scores "
+                    "than legitimate claims. This is worse than random, not merely random")
+        if lo > 0.5:
+            return ("better than random but degraded",
+                    f"ranking is better than random but degraded — ROC-AUC {roc:.3f}, 95% CI [{lo:.3f}, {hi:.3f}]")
+        return ("indistinguishable from random",
+                f"ranking is indistinguishable from random — ROC-AUC {roc:.3f}, 95% CI [{lo:.3f}, {hi:.3f}] contains 0.5")
+    return ("degraded", f"ROC-AUC {roc:.3f} (no confidence interval available)")

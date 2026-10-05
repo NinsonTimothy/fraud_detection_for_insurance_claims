@@ -11,7 +11,7 @@ PAGES = {
         st.Page("app_pages/monitoring.py", title="Monitoring & external validation", url_path="monitoring"),
     ],
     "Investigate": [
-        st.Page("app_pages/batch_review.py", title="Batch review queue", url_path="batch"),
+        st.Page("app_pages/batch_review.py", title="Batch review dashboard", url_path="batch"),
     ],
     "Score": [
         st.Page("app_pages/score_claim.py", title="Score a claim", url_path="score"),

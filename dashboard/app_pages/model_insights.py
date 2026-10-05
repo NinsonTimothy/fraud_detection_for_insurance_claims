@@ -17,8 +17,8 @@ if _dashboard_root not in sys.path:
     # the backend's app/ package (see components/data_access.py,
     # which puts backend/ at sys.path[0] once, on first import).
     sys.path.append(_dashboard_root)
-from components.data_access import load_cross_validation, load_shap_importance, models_are_available
-from components.theme import ACCENT, DANGER, MUTED, inject_css, page_header
+from components.data_access import load_champion_decision, load_cross_validation, load_field_importance, load_metrics, load_pairwise_tests, load_selection_summary, load_shap_importance, models_are_available
+from components.theme import ACCENT, DANGER, MUTED, WARNING, inject_css, page_header
 
 inject_css()
 page_header("Model insights", "Global feature importance and the honest feature-quality audit — including the features flagged as NOT safe to treat as real fraud signal.")
@@ -30,16 +30,53 @@ if not models_are_available():
 shap_df = load_shap_importance()
 cv_df = load_cross_validation()
 
-tab1, tab2, tab3 = st.tabs(["Global feature importance", "Feature quality audit", "Cross-validation"])
+tab0, tab1, tab2, tab3 = st.tabs(["Model selection & baseline", "Global feature importance", "Feature quality audit", "Cross-validation"])
+
+with tab0:
+    decision = load_champion_decision()
+    summary = load_selection_summary()
+    tests = load_pairwise_tests()
+    metrics = load_metrics()
+    if not decision or summary.empty:
+        st.info("Run `python -m app.ml.train` to produce the model-selection artefacts.")
+    else:
+        proto = decision["protocol"]
+        st.markdown(
+            f"""**How the champion was chosen (MS-01).** {proto['data'].capitalize()}. Outer loop: {proto['outer_cv']}.
+Inner loop: {proto['inner_cv']}. Rule, fixed in code before results were seen: {proto['selection_rule']}.
+Test: {proto['significance_test']}."""
+        )
+        show = summary.sort_values("f1_mean", ascending=False)
+        fig = px.bar(show, x="model", y="f1_mean", error_y="f1_std", color="model",
+                     color_discrete_map={"major_damage_rule": WARNING}, labels={"f1_mean": "F1 (nested CV, mean ± SD)", "model": ""})
+        fig.update_layout(showlegend=False, height=340, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e6e8ef")
+        st.plotly_chart(fig, width="stretch")
+        st.dataframe(show.round(3), width="stretch", hide_index=True)
+        ba = metrics.get("baseline_agreement", {})
+        st.markdown(
+            f"""<div class="aeg-note" style="border-color:{WARNING}55;background:{WARNING}14;">
+            <b>Measured champion: {decision['measured_champion']}.</b>
+            {'It did NOT beat the one-line Major-Damage rule on F1, so the pre-declared rule fell back to the best ML candidate.' if not decision['beats_or_matches_baseline_on_f1'] else 'It matches or beats the Major-Damage rule on F1.'}
+            On the 200 test claims its review/no-review decision is identical to the rule's for
+            {ba.get('test_decision_agreement', float('nan')):.0%} of claims. The model is kept because it RANKS
+            claims (the rule gives every Major-Damage claim the same score, so it cannot say which to open first)
+            and EXPLAINS each score — not because it flags better.</div>""",
+            unsafe_allow_html=True,
+        )
+        if not tests.empty:
+            st.write("")
+            st.markdown("**Paired significance tests (champion minus other; every p-value computed by code):**")
+            st.dataframe(tests.drop(columns=["champion"]).round(4), width="stretch", hide_index=True)
+
 
 with tab1:
     top20 = shap_df.head(20).sort_values("mean_abs_shap")
-    risky = {"is_highrisk_hobby", "is_exec_occupation"}
+    risky = {"is_highrisk_hobby", "is_exec_occupation"}  # proxy features
     top20["flag"] = top20["feature"].isin(risky)
     fig = px.bar(top20, x="mean_abs_shap", y="feature", orientation="h", color="flag",
                  color_discrete_map={True: DANGER, False: ACCENT}, labels={"mean_abs_shap": "mean |SHAP|", "feature": ""})
     fig.update_layout(showlegend=False, height=560, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e6e8ef")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     st.caption("Red bars = features flagged in the audit tab as not safe to treat as genuine fraud signal.")
 
     st.markdown(
@@ -92,16 +129,21 @@ removed in favor of the single documented flag each.
   is a standard actuarial red flag.
 - `policy_age_at_incident_days` / `is_new_customer` — "new policy, big claim shortly after" is one of
   the best-documented real fraud indicators.
-- `is_no_witness` — zero independent witnesses, a weak but genuine signal.
+- ~~`is_no_witness`~~ — **removed (MS-02).** "No witnesses = suspicious" is a real-world red flag, but in
+  this dataset zero-witness claims have the LOWEST fraud rate (0: 20.1%, 1: 24.4%, 2: 29.6%, 3: 24.7%).
+  The flag therefore contradicted its own name. The raw witness count is still a feature; the pattern is
+  documented in docs/LIMITATIONS.md as a dataset artefact, not real fraud behaviour.
 - `incident_severity_ordinal` / `is_major_damage` — the ordinal order (Trivial < Minor < Major < Total
   Loss) is confirmed against the original FYP project's own preprocessing notebook (PB-24), not inferred.
         """
     )
 
 with tab3:
-    st.dataframe(cv_df, use_container_width=True, hide_index=True)
+    st.dataframe(cv_df, width="stretch", hide_index=True)
+    st.caption("MS-01: this table is now the nested CV on the 800-row TRAINING split only (15 paired outer folds). "
+               "The previous version cross-validated over all 1,000 rows, which let the test rows influence model choice.")
     st.caption(
-        "Full-pipeline 5-fold CV — the scaler and classifier are refit from scratch on each fold's own "
+        "Full-pipeline CV — the scaler and classifier are refit from scratch on each fold's own "
         "training partition, not reused from a single fit. An earlier version of this file called "
         "sklearn's cross_validate() on an already-engineered matrix and got ROC-AUC ≈0.94 — inflated "
         "because, at the time, most rows in each fold had already had their own label baked into the "

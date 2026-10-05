@@ -1,128 +1,204 @@
-"""app_pages/score_claim.py — one-off claim scoring form, calls
-FraudScoringService IN-PROCESS (same instance the API uses).
+"""app_pages/score_claim.py — score one claim and SEE why.
 
-PB-12 (fixed): the scored result used to be shown and then discarded —
-nothing was written to the DB, so a claim scored here never showed up in
-`GET /claims`, the risk grid, or the audit log the way an API-scored
-claim did. Now persisted through `db/persistence.py`'s
-`persist_scored_claim()`, the exact same function `api/scoring.py`'s
-`POST /score` uses, tagged `ingested_via="dashboard"` so the audit trail
-can tell the two surfaces apart.
+Pre-defence changes (supervisor feedback):
 
-PB-19 (fixed): `incident_date`/`policy_bind_date` used to be hardcoded
-("2024-06-15"/"2018-01-01") for EVERY claim scored here, regardless of
-`months_as_customer` or anything else the analyst entered — silently
-wrong for any claim that wasn't meant to describe exactly that policy
-age. Reproduced directly: scoring the same claim with `months_as_customer`
-=6 through the always-hardcoded dates vs. through dates actually
-consistent with a 6-month-old policy changed `fraud_probability` by
-~0.003 — small on this dataset, but a real, silent effect on
-`policy_age_days`/`vehicle_age_at_incident` (feature_engineering.py), not
-a cosmetic one. Both are now real `st.date_input` widgets.
-`insured_hobbies`/`insured_occupation` used to be free `st.text_input`
-fields with no indication of the schema's actual (fixed, 20/14-value)
-vocabulary — harmless for the shipped model's default config (see the
-caption below), but a real risk if `INCLUDE_PROXY_FEATURES=true`
-(SH-02/D3) is ever toggled on: a typo silently fails the `isin()`/`==`
-membership checks feature_engineering.py builds `is_highrisk_hobby`/
-`is_exec_occupation` from. Now `st.selectbox`es over
-`feature_engineering.KNOWN_HOBBIES`/`KNOWN_OCCUPATIONS`, the same
-constants that vocabulary check is actually built from — can't drift
-apart from what the model layer recognizes."""
+SC-01  The form used to collect only ~15 fields. Fields carrying roughly a
+       fifth of the model's SHAP weight (incident state, umbrella limit,
+       bodily injuries, collision type, authorities contacted, ...) were
+       never asked for, so they silently fell back to defaults on every
+       claim scored here. Meanwhile it DID ask for hobby, occupation and ZIP,
+       which the shipped model does not use at all (proxy features are off;
+       ZIP was removed in PB-02). The form is now built from the fields the
+       model actually uses, and the page shows what share of the model's
+       weight the form covers, computed from shap_importance_by_field.csv.
+TC-01  Total claim amount is no longer typed: it is injury + property +
+       vehicle, shown live, exactly as in every training row.
+VZ-01  The result is visual: a risk gauge with the review threshold, a
+       contribution chart (one bar per claim field, labelled with this
+       claim's real value — see the EX-01 police-report fix in
+       explainer.py), where the claim sits among the 200 test claims, and the
+       claim-amount breakdown.
+DS-01  Decision-support wording: the system recommends; a person decides.
+"""
 from __future__ import annotations
 
 import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 _dashboard_root = str(Path(__file__).resolve().parents[1])
 if _dashboard_root not in sys.path:
-    # PB-01: append, never insert(0, ...) — inserting the dashboard
-    # dir at the FRONT of sys.path on every rerun is what let
-    # `import app...` resolve to the old dashboard/app.py instead of
-    # the backend's app/ package (see components/data_access.py,
-    # which puts backend/ at sys.path[0] once, on first import).
     sys.path.append(_dashboard_root)
-from components.data_access import get_scoring_service, models_are_available, new_db_session
-from components.theme import inject_css, page_header, risk_badge
+from components.charts import claim_breakdown_donut, reasons_bar, risk_gauge, score_context_histogram
+from components.data_access import (
+    PROCESSED_DIR, get_scoring_service, load_field_importance, models_are_available, new_db_session,
+)
+from components.theme import DANGER, MUTED, SUCCESS, WARNING, inject_css, page_header, risk_badge
 
 from app.core.config import INCLUDE_PROXY_FEATURES
-from app.ml.feature_engineering import KNOWN_HOBBIES, KNOWN_OCCUPATIONS
+from app.ml.explainer import build_source_map
+from app.ml.feature_engineering import KNOWN_HOBBIES, KNOWN_OCCUPATIONS, MISSING_COLUMN_DEFAULTS
+from app.ml.risk_policy import DECISION_SUPPORT_NOTICE, HIGH_RISK_EDGE, MEDIUM_RISK_EDGE
 
 inject_css()
-page_header("Score a claim", "Fills in the fields this model actually uses — anything left blank falls back to a documented default, same as an external adapter would see.")
+page_header("Score a claim", "Enter a claim, get a fraud-risk score and a visual explanation of what drove it.")
+st.markdown(f"<div class='aeg-note'>🧑‍⚖️ {DECISION_SUPPORT_NOTICE}</div>", unsafe_allow_html=True)
+st.write("")
 
 if not models_are_available():
     st.warning("No trained model found. Run `python -m app.ml.train` from `backend/` first.")
     st.stop()
 
-with st.form("score_form"):
+service = get_scoring_service()
+D = MISSING_COLUMN_DEFAULTS
+
+# Category options come from the trained model's own one-hot columns, so the
+# form can never offer a value the model has not seen (or miss one it has).
+_known: dict[str, list[str]] = {}
+for _col, (_src, _cat) in build_source_map(service.feature_columns).items():
+    _known.setdefault(_src, []).append(_cat)
+_known = {k: sorted(v) for k, v in _known.items()}
+
+
+def _cat(label: str, field: str, help_text: str | None = None):
+    opts = _known.get(field, [str(D[field])])
+    default = str(D[field])
+    return st.selectbox(label, opts, index=opts.index(default) if default in opts else 0, key=f"f_{field}", help=help_text)
+
+
+# Raw fields that feed each engineered feature, for the coverage check.
+ENGINEERED_INPUTS = {
+    "claim_to_premium_ratio": {"injury_claim", "property_claim", "vehicle_claim", "policy_annual_premium"},
+    "vehicle_claim_pct": {"injury_claim", "property_claim", "vehicle_claim"},
+    "injury_claim_pct": {"injury_claim", "property_claim", "vehicle_claim"},
+    "property_claim_pct": {"injury_claim", "property_claim", "vehicle_claim"},
+    "total_claim_amount": {"injury_claim", "property_claim", "vehicle_claim"},
+    "policy_age_at_incident_days": {"policy_bind_date", "incident_date"},
+    "is_new_customer": {"months_as_customer"},
+    "vehicle_age_at_incident": {"incident_date", "auto_year"},
+    "incident_severity_ordinal": {"incident_severity"},
+    "is_major_damage": {"incident_severity"},
+    "is_highrisk_hobby": {"insured_hobbies"},
+    "is_exec_occupation": {"insured_occupation"},
+}
+
+tab_policy, tab_person, tab_incident, tab_amounts = st.tabs(
+    ["① Policy", "② Insured person", "③ Incident", "④ Claim amounts & vehicle"])
+
+with tab_policy:
     c1, c2, c3 = st.columns(3)
     with c1:
-        age = st.number_input("Insured age", 16, 100, 35)
-        months_as_customer = st.number_input("Months as customer", 0, 600, 120)
-        policy_deductable = st.selectbox("Policy deductible", [500, 1000, 2000], index=1)
-        policy_annual_premium = st.number_input("Annual premium", 0.0, 5000.0, 1300.0)
-        witnesses = st.number_input("Witnesses", 0, 5, 1)
+        months_as_customer = st.number_input("Months as customer", 0, 600, 120, key="f_months")
+        policy_state = _cat("Policy state", "policy_state")
     with c2:
-        total_claim_amount = st.number_input("Total claim amount", 0.0, 200000.0, 55000.0)
-        vehicle_claim = st.number_input("Vehicle claim", 0.0, 150000.0, 35000.0)
-        injury_claim = st.number_input("Injury claim", 0.0, 100000.0, 10000.0)
-        property_claim = st.number_input("Property claim", 0.0, 100000.0, 10000.0)
-        incident_severity = st.selectbox("Incident severity", ["Trivial Damage", "Minor Damage", "Major Damage", "Total Loss"], index=2)
+        policy_csl = _cat("Policy CSL (combined single limit)", "policy_csl")
+        policy_deductable = st.selectbox("Policy deductible ($)", [500, 1000, 2000], index=1, key="f_ded")
     with c3:
-        insured_hobbies = st.selectbox("Insured hobby", KNOWN_HOBBIES, index=KNOWN_HOBBIES.index("reading"))
-        insured_occupation = st.selectbox("Insured occupation", KNOWN_OCCUPATIONS, index=KNOWN_OCCUPATIONS.index("craft-repair"))
-        insured_zip = st.number_input("Insured ZIP", 10000, 999999, 468000)
-        police_report_available = st.selectbox("Police report available", ["YES", "NO"], index=0)
-        auto_year = st.number_input("Auto year", 1990, 2026, 2015)
-        # PB-19: default bind date consistent with months_as_customer
-        # above (~30.44 days/month) rather than a fixed constant that
-        # ignores it — still freely editable, this is just a starting
-        # point that isn't already self-contradictory. Explicit `key=` on
-        # both date_inputs: without one, Streamlit derives a widget's
-        # identity partly from its own call arguments, and incident_date's
-        # `min_value` below is itself derived from policy_bind_date's live
-        # value — so editing policy_bind_date on one rerun silently
-        # resets incident_date back to its coded default on the next,
-        # discarding whatever the analyst had entered there. Reproduced
-        # directly against a bare AppTest session before adding `key=`:
-        # setting Incident date, then changing Policy bind date, silently
-        # reverted Incident date to today(). A fixed `key=` keeps each
-        # widget's own state independent of the other's current value.
-        policy_bind_date = st.date_input(
-            "Policy bind date", value=date.today() - timedelta(days=round(months_as_customer * 30.44)),
-            min_value=date(1990, 1, 1), max_value=date.today(), key="policy_bind_date",
-        )
-        # feature_engineering.py's own comment flags incident-before-bind
-        # as a data ISSUE (a negative "policy age"), so min_value enforces
-        # incident_date >= policy_bind_date here rather than letting the
-        # form build another instance of it.
-        incident_date = st.date_input("Incident date", value=date.today(), min_value=policy_bind_date, max_value=date.today(), key="incident_date")
+        policy_annual_premium = st.number_input("Annual premium ($)", 0.0, 5000.0, 1256.0, step=50.0, key="f_prem")
+        umbrella_limit = st.select_slider(
+            "Umbrella limit ($)", options=[0, 1_000_000, 2_000_000, 3_000_000, 4_000_000, 5_000_000,
+                                           6_000_000, 7_000_000, 8_000_000, 9_000_000, 10_000_000],
+            value=0, format_func=lambda v: f"{v/1e6:.0f}M" if v else "None", key="f_umb")
+    policy_bind_date = st.date_input(
+        "Policy bind date", value=date.today() - timedelta(days=round(months_as_customer * 30.44)),
+        min_value=date(1990, 1, 1), max_value=date.today(), key="policy_bind_date")
 
-    if not INCLUDE_PROXY_FEATURES:
-        st.caption("Hobby/occupation don't affect this score in the shipped default configuration — `INCLUDE_PROXY_FEATURES` is off (SH-02/D3, see docs/REBUILD_NOTES.md). Still validated against the real category schema below.")
+with tab_person:
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        age = st.number_input("Insured age", 16, 100, 39, key="f_age")
+        insured_sex = _cat("Insured sex", "insured_sex")
+    with c2:
+        insured_education_level = _cat("Education level", "insured_education_level")
+        insured_relationship = _cat("Relationship to policyholder", "insured_relationship")
+    with c3:
+        capital_gains = st.number_input("Capital gains ($)", 0, 200_000, 0, step=1000, key="f_cg")
+        capital_loss = st.number_input("Capital loss ($, enter as negative)", -200_000, 0, 0, step=1000, key="f_cl")
+    if INCLUDE_PROXY_FEATURES:
+        c4, c5 = st.columns(2)
+        insured_hobbies = c4.selectbox("Insured hobby (proxy feature — ON)", KNOWN_HOBBIES, index=KNOWN_HOBBIES.index("reading"))
+        insured_occupation = c5.selectbox("Insured occupation (proxy feature — ON)", KNOWN_OCCUPATIONS, index=KNOWN_OCCUPATIONS.index("craft-repair"))
+    else:
+        insured_hobbies = insured_occupation = None
+        st.caption("Hobby, occupation and ZIP code are not asked for: the shipped model does not use them "
+                   "(lifestyle/occupation proxy features are switched off, and the ZIP feature was removed in PB-02).")
 
-    submitted = st.form_submit_button("Score claim", type="primary")
+with tab_incident:
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        incident_severity = st.selectbox("Incident severity", ["Trivial Damage", "Minor Damage", "Major Damage", "Total Loss"],
+                                         index=1, key="f_sev")
+        incident_type = _cat("Incident type", "incident_type")
+        collision_type = _cat("Collision type", "collision_type")
+    with c2:
+        incident_state = _cat("Incident state", "incident_state")
+        authorities_contacted = _cat("Authorities contacted", "authorities_contacted")
+        incident_hour = st.slider("Incident hour (0–23)", 0, 23, 12, key="f_hour")
+    with c3:
+        number_of_vehicles = st.number_input("Vehicles involved", 1, 4, 1, key="f_veh")
+        bodily_injuries = st.number_input("Bodily injuries", 0, 2, 0, key="f_inj")
+        witnesses = st.number_input("Witnesses", 0, 3, 1, key="f_wit")
+    c4, c5 = st.columns(2)
+    with c4:
+        property_damage = _cat("Property damage?", "property_damage")
+        police_report_available = _cat("Police report available?", "police_report_available")
+    with c5:
+        incident_date = st.date_input("Incident date", value=date.today(), min_value=policy_bind_date,
+                                      max_value=date.today(), key="incident_date")
 
-if submitted:
+with tab_amounts:
+    c1, c2, c3, c4 = st.columns(4)
+    injury_claim = c1.number_input("Injury claim ($)", 0.0, 100_000.0, 6800.0, step=100.0, key="f_ic")
+    property_claim = c2.number_input("Property claim ($)", 0.0, 100_000.0, 13100.0, step=100.0, key="f_pc")
+    vehicle_claim = c3.number_input("Vehicle claim ($)", 0.0, 150_000.0, 35100.0, step=100.0, key="f_vc")
+    total_claim_amount = injury_claim + property_claim + vehicle_claim
+    with c4:
+        st.metric("Total claim (auto)", f"${total_claim_amount:,.0f}", help="Always injury + property + vehicle — "
+                  "true for every one of the 1,000 training claims, so it is calculated, not typed.")
+    auto_year = st.number_input("Vehicle model year", 1990, 2026, 2005, key="f_year")
+
+# ---- Coverage check: what share of the model's weight this form supplies ----
+FORM_FIELDS = {
+    "months_as_customer", "policy_state", "policy_csl", "policy_deductable", "policy_annual_premium",
+    "umbrella_limit", "policy_bind_date", "age", "insured_sex", "insured_education_level",
+    "insured_relationship", "capital-gains", "capital-loss", "incident_severity", "incident_type",
+    "collision_type", "incident_state", "authorities_contacted", "incident_hour_of_the_day",
+    "number_of_vehicles_involved", "bodily_injuries", "witnesses", "property_damage",
+    "police_report_available", "incident_date", "injury_claim", "property_claim", "vehicle_claim", "auto_year",
+} | ({"insured_hobbies", "insured_occupation"} if INCLUDE_PROXY_FEATURES else set())
+field_imp = load_field_importance()
+if not field_imp.empty:
+    covered = field_imp["source_field"].map(lambda f: ENGINEERED_INPUTS.get(f, {f}) <= FORM_FIELDS)
+    st.caption(f"This form supplies inputs for **{field_imp.loc[covered, 'share_of_total'].sum():.0%}** of the "
+               f"model's SHAP weight (computed from `shap_importance_by_field.csv`, not typed).")
+
+st.write("")
+if st.button("Score claim", type="primary", width="stretch"):
     payload = {
-        "age": age, "months_as_customer": months_as_customer, "policy_deductable": policy_deductable,
-        "policy_annual_premium": policy_annual_premium, "witnesses": witnesses,
-        "total_claim_amount": total_claim_amount, "vehicle_claim": vehicle_claim,
-        "injury_claim": injury_claim, "property_claim": property_claim,
-        "incident_severity": incident_severity, "insured_hobbies": insured_hobbies,
-        "insured_occupation": insured_occupation, "insured_zip": insured_zip,
-        "police_report_available": police_report_available, "auto_year": auto_year,
+        "months_as_customer": int(months_as_customer), "age": int(age), "policy_state": policy_state,
+        "policy_csl": policy_csl, "policy_deductable": int(policy_deductable),
+        "policy_annual_premium": float(policy_annual_premium), "umbrella_limit": int(umbrella_limit),
+        "insured_sex": insured_sex, "insured_education_level": insured_education_level,
+        "insured_relationship": insured_relationship, "capital-gains": int(capital_gains),
+        "capital-loss": int(capital_loss), "incident_type": incident_type, "collision_type": collision_type,
+        "incident_severity": incident_severity, "authorities_contacted": authorities_contacted,
+        "incident_state": incident_state, "incident_hour_of_the_day": int(incident_hour),
+        "number_of_vehicles_involved": int(number_of_vehicles), "property_damage": property_damage,
+        "bodily_injuries": int(bodily_injuries), "witnesses": int(witnesses),
+        "police_report_available": police_report_available,
+        "injury_claim": float(injury_claim), "property_claim": float(property_claim),
+        "vehicle_claim": float(vehicle_claim), "total_claim_amount": float(total_claim_amount),
+        "auto_year": int(auto_year),
         "incident_date": incident_date.isoformat(), "policy_bind_date": policy_bind_date.isoformat(),
     }
-    service = get_scoring_service()
+    if INCLUDE_PROXY_FEATURES:
+        payload["insured_hobbies"], payload["insured_occupation"] = insured_hobbies, insured_occupation
+
     result = service.score_one(payload)
     st.session_state["session_scored_count"] = st.session_state.get("session_scored_count", 0) + 1
-
-    # PB-12: persist, same as api/scoring.py's POST /score does.
     from app.db.persistence import persist_scored_claim
     db = new_db_session()
     try:
@@ -131,16 +207,47 @@ if submitted:
         claim_id = claim.id
     finally:
         db.close()
+    st.session_state["last_score"] = {"result": result, "payload": payload, "claim_id": claim_id}
 
-    st.write("")
-    c1, c2 = st.columns([1, 2])
+if "last_score" in st.session_state:
+    res = st.session_state["last_score"]["result"]
+    pay = st.session_state["last_score"]["payload"]
+    p, thr, grade = res["fraud_probability"], res["operating_threshold"], res["risk_grade"]
+    colour = {"Low": SUCCESS, "Medium": WARNING, "High": DANGER}[grade]
+
+    st.divider()
+    c1, c2 = st.columns([1, 1.4])
     with c1:
-        st.markdown(f"### {result['fraud_probability']:.1%} fraud probability")
-        st.markdown(risk_badge(result["risk_grade"]), unsafe_allow_html=True)
-        st.caption(f"Flagged: {'Yes' if result['flagged'] else 'No'} (threshold {result['operating_threshold']:.2f})")
-        st.caption(f"Recommended action: {result['recommended_action']}")
-        st.caption(f"Saved as claim #{claim_id} — visible via the API's /claims/{claim_id} and the audit log.")
+        st.plotly_chart(risk_gauge(p, thr, MEDIUM_RISK_EDGE, HIGH_RISK_EDGE), width="stretch")
     with c2:
-        st.markdown("**Top reasons (SHAP)**")
-        for r in result["top_reasons"]:
-            st.markdown(f"- {r['sentence']}")
+        st.markdown(f"### {risk_badge(grade)} &nbsp; {p:.1%} fraud probability", unsafe_allow_html=True)
+        above = p >= thr
+        st.markdown(
+            f"<div class='aeg-card' style='border-color:{colour}88'>"
+            f"<b>{'Above' if above else 'Below'} the review threshold</b> ({thr:.0%}). "
+            f"<br/><b>Suggested next step:</b> {res['recommended_action']}."
+            f"<br/><span style='color:{MUTED}'>Saved as claim #{st.session_state['last_score']['claim_id']} · "
+            f"model {res['model_version']}</span></div>", unsafe_allow_html=True)
+        ups = [r for r in res["top_reasons"] if r["shap_value"] > 0][:3]
+        downs = [r for r in res["top_reasons"] if r["shap_value"] < 0][:3]
+        if ups:
+            st.markdown("**Pushing the score up:** " + "; ".join(f"{r['display_name']} = {r['display_value']}" for r in ups))
+        if downs:
+            st.markdown("**Pulling the score down:** " + "; ".join(f"{r['display_name']} = {r['display_value']}" for r in downs))
+
+    st.plotly_chart(reasons_bar(res["top_reasons"]), width="stretch")
+    st.caption("Each bar is one claim field (categorical answers are grouped, so a field appears once, with the "
+               "value you entered). Red ▲ raises the risk score, green ▼ lowers it. Bar length = SHAP contribution.")
+
+    c3, c4 = st.columns(2)
+    ref_path = PROCESSED_DIR / "risk_scores_test.csv"
+    if ref_path.exists():
+        ref = pd.read_csv(ref_path, usecols=["y_proba"])["y_proba"].to_numpy()
+        pct = (ref < p).mean()
+        c3.plotly_chart(score_context_histogram(ref, p, thr), width="stretch")
+        c3.caption(f"This claim scores higher than {pct:.0%} of the held-out test claims.")
+    c4.plotly_chart(claim_breakdown_donut(pay["injury_claim"], pay["property_claim"], pay["vehicle_claim"]),
+                    width="stretch")
+    with st.expander("All reason codes (table)"):
+        st.dataframe(pd.DataFrame(res["top_reasons"])[["rank", "display_name", "display_value", "direction", "impact", "shap_value"]],
+                     width="stretch", hide_index=True)
