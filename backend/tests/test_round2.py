@@ -70,8 +70,10 @@ def test_inconsistent_total_mask():
     df = pd.DataFrame([{"total_claim_amount": 6, "injury_claim": 1, "property_claim": 2, "vehicle_claim": 3},
                        {"total_claim_amount": 6.5, "injury_claim": 1, "property_claim": 2, "vehicle_claim": 3},
                        {"total_claim_amount": 600, "injury_claim": 1, "property_claim": 2, "vehicle_claim": 3},
-                       {"total_claim_amount": 600}])
-    assert inconsistent_total_mask(df).tolist() == [False, False, True, False]
+                       {"total_claim_amount": 600},
+                       {"total_claim_amount": 100, "property_claim": 397, "vehicle_claim": 1},
+                       {"total_claim_amount": 600, "property_claim": 397}])
+    assert inconsistent_total_mask(df).tolist() == [False, False, True, False, True, False]
 
 
 @needs_artifacts
@@ -80,8 +82,10 @@ def test_api_rejects_inconsistent_total_single_and_batch():
     from app.core.config import API_KEY
     from app.main import app
     c = TestClient(app, headers={"X-API-Key": API_KEY})
-    r = c.post("/score", json={"injury_claim": 1, "property_claim": 2, "vehicle_claim": 3, "total_claim_amount": 600})
-    assert r.status_code == 422
+    ok = c.post("/score", json={"payload": {"injury_claim": 1, "property_claim": 2, "vehicle_claim": 3, "total_claim_amount": 6}})
+    assert ok.status_code == 200  # same shape, consistent total -> accepted
+    r = c.post("/score", json={"payload": {"injury_claim": 1, "property_claim": 2, "vehicle_claim": 3, "total_claim_amount": 600}})
+    assert r.status_code == 422 and "total_claim_amount" in r.text  # rejected for the RIGHT reason
     csv = b"injury_claim,property_claim,vehicle_claim,total_claim_amount\n1,2,3,6\n1,2,3,600\n"
     r = c.post("/score/batch", files={"file": ("b.csv", io.BytesIO(csv), "text/csv")})
     body = r.json()
@@ -165,3 +169,13 @@ def test_bands_and_threshold_come_from_artifacts():
     pol = json.load(open(MODELS / "risk_policy.json"))
     assert (MEDIUM_RISK_EDGE, HIGH_RISK_EDGE) == (pol["medium_edge"], pol["high_edge"])
     assert _svc().operating_threshold == json.load(open(MODELS / "metrics.json"))["operating_threshold"]
+
+
+def test_single_missing_component_is_derived_exactly_not_defaulted():
+    """Regression for the 5,000-row demo bug: a blank property_claim used the
+    training median and produced a 397% property share."""
+    from app.ml.feature_engineering import apply_missing_defaults
+    out = apply_missing_defaults(pd.DataFrame([{"total_claim_amount": 3297, "injury_claim": 0, "vehicle_claim": 3297}]))
+    assert out["property_claim"].iloc[0] == 0
+    X = engineer_features(pd.DataFrame([{"total_claim_amount": 12244, "injury_claim": 3270, "vehicle_claim": 5149}]))
+    assert X["property_claim_pct"].iloc[0] <= 1.0

@@ -215,8 +215,14 @@ def inconsistent_total_mask(df: pd.DataFrame) -> pd.Series:
         return pd.Series(False, index=df.index)
     v = df[cols].apply(pd.to_numeric, errors="coerce")
     complete = v.notna().all(axis=1)
+    parts_present = v[list(CLAIM_COMPONENT_COLUMNS)].sum(axis=1, min_count=1)
     diff = (v["total_claim_amount"] - v[list(CLAIM_COMPONENT_COLUMNS)].sum(axis=1)).abs()
-    return complete & (diff > TOTAL_TOLERANCE)
+    # Found in the 5,000-row demo: a row with one component MISSING escaped the
+    # check while its remaining components already exceeded the total
+    # (property share 397%), and it ranked as the most suspicious claim.
+    # Parts can never exceed the whole, so that is rejected too.
+    exceeds = v["total_claim_amount"].notna() & parts_present.notna() & (parts_present > v["total_claim_amount"] + TOTAL_TOLERANCE)
+    return (complete & (diff > TOTAL_TOLERANCE)) | exceeds
 
 
 def derive_total_claim_amount(df: pd.DataFrame) -> pd.DataFrame:
@@ -228,6 +234,12 @@ def derive_total_claim_amount(df: pd.DataFrame) -> pd.DataFrame:
     be caught by `inconsistent_total_mask()` and rejected upstream (API /
     batch validation), not silently corrected here."""
     df = df.copy()
+    # An OMITTED component column is treated like a blank one, so an API
+    # caller who leaves a field out gets the same exact derivation.
+    if "total_claim_amount" in df.columns and any(c in df.columns for c in CLAIM_COMPONENT_COLUMNS):
+        for c in CLAIM_COMPONENT_COLUMNS:
+            if c not in df.columns:
+                df[c] = np.nan
     if all(c in df.columns for c in CLAIM_COMPONENT_COLUMNS):
         parts = df[list(CLAIM_COMPONENT_COLUMNS)].apply(pd.to_numeric, errors="coerce")
         have_all = parts.notna().all(axis=1)
@@ -237,6 +249,21 @@ def derive_total_claim_amount(df: pd.DataFrame) -> pd.DataFrame:
         fill = have_all & total.isna()
         total.loc[fill] = parts.loc[fill].sum(axis=1)
         df["total_claim_amount"] = total
+        # Found in the 5,000-row demo: when ONE component is blank but the
+        # total and the other two are present, the generic median default
+        # (e.g. property_claim = 13,100 against a 3,297 total) fabricated
+        # impossible shares (397%) and pushed such claims to the TOP of the
+        # queue. The missing part is exactly total - (other two), by the same
+        # identity that holds in every training row. Supplied values are never
+        # changed; a negative remainder means the row is inconsistent and is
+        # rejected by inconsistent_total_mask() instead.
+        one_missing = parts.isna().sum(axis=1).eq(1) & total.notna()
+        for col in CLAIM_COMPONENT_COLUMNS:
+            m = one_missing & parts[col].isna()
+            if m.any():
+                remainder = total[m] - parts.loc[m, [c for c in CLAIM_COMPONENT_COLUMNS if c != col]].sum(axis=1)
+                ok = remainder >= -TOTAL_TOLERANCE
+                df.loc[remainder.index[ok], col] = remainder[ok].clip(lower=0)
     return df
 
 
