@@ -18,7 +18,7 @@ Aegis Risk Engine supports:
 - Batch claim scoring from CSV files
 - Leak-free champion selection (LR / RF / XGBoost vs. a one-line rule baseline)
 - SHAP-based local and global explanations
-- Cost-aware threshold analysis
+- Cost-sensitivity analysis over a grid of stated assumptions
 - Claim, audit, and feedback persistence
 - Model monitoring and external validation
 - Streamlit analyst dashboard
@@ -26,7 +26,7 @@ Aegis Risk Engine supports:
 - Docker Compose deployment
 - Automated backend testing
 
-The shipped classifier is a **Random Forest** trained on a 1,000-row auto-insurance claims dataset. The system is also evaluated against a separate 15,420-row external dataset to test whether its performance transfers beyond the training distribution.
+The shipped classifier (the *champion*) is chosen automatically by a pre-declared rule on the 800 development rows — currently a calibrated **Logistic Regression**, compared against Random Forest, XGBoost and a one-line rule baseline (see [`docs/CURRENT_METRICS.md`](docs/CURRENT_METRICS.md)). It is trained on a 1,000-row auto-insurance claims dataset and also evaluated against a separate 15,420-row external dataset to test whether its performance transfers beyond the training distribution.
 
 That external validation reveals an important limitation: the model does **not** generalize strongly to the external dataset. This is intentionally documented rather than hidden. See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) and [`docs/CURRENT_METRICS.md`](docs/CURRENT_METRICS.md) before interpreting model performance.
 
@@ -45,7 +45,7 @@ That external validation reveals an important limitation: the model does **not**
                      └───────────┬───────────┘
                                  │
                   ┌──────────────▼──────────────┐
-                  │ Random Forest Risk Scoring │
+                  │ Champion-model Risk Scoring│
                   │ + threshold / risk policy  │
                   └──────────────┬──────────────┘
                                  │
@@ -72,7 +72,7 @@ Claims can be scored individually through the API or in batches from CSV files. 
 - Python
 - scikit-learn
 - XGBoost
-- imbalanced-learn
+- imbalanced-learn (imbalance experiment only; the shipped model uses class weighting)
 - SHAP
 - pandas
 - NumPy
@@ -221,15 +221,19 @@ the 200 test rows, runs the Oracle external validation and the sensitivity probe
 `docs/CURRENT_METRICS.md`, `docs/THESIS_UPDATE_NOTES.md` and `docs/VIVA_PREP.md`. It takes a few
 minutes. Every number in the docs comes from these artifacts.
 
-## 7. Run the test suite
+## 5. Run the test suite
+
+From `backend/` (where step 4 left you):
 
 ```bash
-pytest
+pytest                      # backend + ML tests
+cd ../dashboard && pytest   # dashboard tests (Streamlit AppTest)
+cd ../backend               # back to backend/ for the next step
 ```
 
-At the time of the current rebuild, the backend suite passes **153 tests**.
+The 9 Docker tests are skipped automatically when Docker is not available.
 
-## 8. Set a local API key
+## 6. Set a local API key
 
 Every business API endpoint requires an `X-API-Key` header. `/health` and the automatically generated API documentation remain open.
 
@@ -247,7 +251,7 @@ $env:AEGIS_API_KEY="dev-local-key"
 
 The value above is only for local development. Use a strong secret in any real deployment.
 
-## 9. Start the FastAPI backend
+## 7. Start the FastAPI backend
 
 From `backend/`:
 
@@ -267,7 +271,7 @@ Example authenticated request:
 curl -H "X-API-Key: $AEGIS_API_KEY" http://127.0.0.1:8000/claims
 ```
 
-## 10. Start the Streamlit dashboard
+## 8. Start the Streamlit dashboard
 
 Open a **second terminal** at the repository root.
 
@@ -285,7 +289,7 @@ Open:
 http://localhost:8501
 ```
 
-## 11. Local database behavior
+## 9. Local database behavior
 
 When `DATABASE_URL` is not set, Aegis falls back to a local SQLite database:
 
@@ -366,7 +370,7 @@ API docs:  http://localhost:8000/docs
 Dashboard: http://localhost:8501
 ```
 
-The Docker Compose configuration has been run successfully on a normal local Docker environment as part of the rebuilt-project verification.
+The Docker Compose configuration ran successfully before the pre-defence changes; re-run `docker compose up --build` after updating to confirm it on your machine (see `docs/LIMITATIONS.md`).
 
 ## 4. Stop the stack
 
@@ -456,12 +460,7 @@ review). It never approves, denies, or settles a claim; an investigator makes ev
 
 A separate external dataset is used to test transfer beyond the model's training distribution.
 
-The current external validation shows a major generalization failure:
-
-| Evaluation | ROC-AUC |
-|---|---:|
-| Internal holdout | 0.794 |
-| Oracle external validation | 0.463 |
+The model's ranking does not transfer to the external dataset: the internal-test and Oracle ROC-AUC values, their 95% confidence intervals and the verdict (worded automatically from the interval) are in [`docs/CURRENT_METRICS.md`](docs/CURRENT_METRICS.md), section 8. Numbers are deliberately not copied here, so this README cannot go stale after a retrain.
 
 This result is a core finding of the project, not something hidden from the evaluation.
 
@@ -573,9 +572,7 @@ A typical development cycle is:
 ```bash
 cd backend
 pytest
-python -m app.ml.train
-python -m app.ml.evaluate_oracle
-python -m app.ml.generate_metrics_report
+python -m app.ml.run_all     # regenerates models, metrics, reports and docs in order
 ```
 
 After changing model logic, regenerate the metrics report rather than manually editing reported performance values.
@@ -615,8 +612,7 @@ streamlit run streamlit_app.py
 From `backend/`, run:
 
 ```bash
-python -m app.ml.clean_data
-python -m app.ml.train
+python -m app.ml.run_all
 ```
 
 ### Docker services fail on first build
