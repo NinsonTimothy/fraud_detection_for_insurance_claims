@@ -1,113 +1,128 @@
 {
-  "primary_model": "random_forest",
+  "primary_model": "logistic_regression",
   "champion_artifact": "models/champion_model.pkl",
-  "champion_hyperparameters": {
-    "max_depth": 3,
-    "min_samples_leaf": 5
+  "operating_threshold": 0.27,
+  "risk_bands": {
+    "medium_edge": 0.14847323058741868,
+    "high_edge": 0.3795803870225068
   },
-  "operating_threshold": 0.45,
+  "calibration": {
+    "chosen": "sigmoid",
+    "min_gain_required": 0.002,
+    "amendment": "The first version of this rule picked whichever of isotonic/sigmoid had the lower development Brier. On the first full run it chose isotonic, which left only 12 distinct scores across the 200 test claims (isotonic regression is a step function), destroying the within-group ranking that is the model's main contribution over the severity rule, for a Brier gain over sigmoid of under 0.001. The rule was amended, AFTER seeing that result, to prefer the ranking-preserving sigmoid unless isotonic is better by at least the same minimum gain. This is a disclosed post-hoc change, recorded here and in REBUILD_NOTES.md.",
+    "results": {
+      "none": {
+        "brier": 0.1950710302007877,
+        "brier_base_rate": 0.18624374999999996,
+        "ece": 0.16997193276745956
+      },
+      "isotonic": {
+        "brier": 0.15495351702962135,
+        "brier_base_rate": 0.18624374999999996,
+        "ece": 0.04436799653686264
+      },
+      "sigmoid": {
+        "brier": 0.15555611494334814,
+        "brier_base_rate": 0.18624374999999996,
+        "ece": 0.05479744277580034
+      }
+    }
+  },
   "model_comparison": [
+    {
+      "model": "logistic_regression",
+      "threshold": 0.27,
+      "recall": 0.6938775510204082,
+      "precision": 0.5573770491803278,
+      "f1": 0.6181818181818182,
+      "pr_auc": 0.5576907131644,
+      "roc_auc": 0.815515610217597,
+      "accuracy": 0.79,
+      "flag_rate": 0.305,
+      "confusion_matrix": {
+        "tn": 124,
+        "fp": 27,
+        "fn": 15,
+        "tp": 34
+      },
+      "is_champion": true,
+      "is_baseline": false,
+      "test_brier": 0.13949126939785764,
+      "test_brier_base_rate": 0.18497500000000003,
+      "test_ece": 0.07640272920084532
+    },
     {
       "model": "random_forest",
       "threshold": 0.45,
       "recall": 0.7346938775510204,
-      "precision": 0.631578947368421,
-      "f1": 0.6792452830188679,
-      "pr_auc": 0.5457352376509063,
-      "roc_auc": 0.7924043789701309,
-      "accuracy": 0.83,
+      "precision": 0.6206896551724138,
+      "f1": 0.6728971962616822,
+      "pr_auc": 0.5183960521317347,
+      "roc_auc": 0.7668603865387215,
+      "accuracy": 0.825,
+      "flag_rate": 0.29,
       "confusion_matrix": {
-        "tn": 130,
-        "fp": 21,
+        "tn": 129,
+        "fp": 22,
         "fn": 13,
         "tp": 36
       },
-      "hyperparameters": {
-        "max_depth": 3,
-        "min_samples_leaf": 5
-      },
+      "is_champion": false,
       "is_baseline": false,
-      "flag_rate": 0.285
-    },
-    {
-      "model": "logistic_regression",
-      "threshold": 0.55,
-      "recall": 0.7142857142857143,
-      "precision": 0.625,
-      "f1": 0.6666666666666666,
-      "pr_auc": 0.5917978173994345,
-      "roc_auc": 0.8298418705230437,
-      "accuracy": 0.825,
-      "confusion_matrix": {
-        "tn": 130,
-        "fp": 21,
-        "fn": 14,
-        "tp": 35
-      },
-      "hyperparameters": {
-        "C": 0.01
-      },
-      "is_baseline": false,
-      "flag_rate": 0.28
+      "test_brier": 0.15811390925443372,
+      "test_brier_base_rate": 0.18497500000000003,
+      "test_ece": 0.15204562480687606
     },
     {
       "model": "xgboost",
-      "threshold": 0.45,
-      "recall": 0.7142857142857143,
-      "precision": 0.6363636363636364,
-      "f1": 0.673076923076923,
-      "pr_auc": 0.5641055824625283,
-      "roc_auc": 0.816191377213137,
-      "accuracy": 0.83,
+      "threshold": 0.39,
+      "recall": 0.6938775510204082,
+      "precision": 0.5230769230769231,
+      "f1": 0.5964912280701755,
+      "pr_auc": 0.4820498558340205,
+      "roc_auc": 0.7792944992566563,
+      "accuracy": 0.77,
+      "flag_rate": 0.325,
       "confusion_matrix": {
-        "tn": 131,
-        "fp": 20,
-        "fn": 14,
-        "tp": 35
+        "tn": 120,
+        "fp": 31,
+        "fn": 15,
+        "tp": 34
       },
-      "hyperparameters": {
-        "max_depth": 2,
-        "n_estimators": 100
-      },
+      "is_champion": false,
       "is_baseline": false,
-      "flag_rate": 0.275
+      "test_brier": 0.1619310975074768,
+      "test_brier_base_rate": 0.18497500000000003,
+      "test_ece": 0.10931240171194077
     },
     {
       "model": "major_damage_rule",
-      "threshold": 0.05,
+      "threshold": 0.5,
       "recall": 0.7346938775510204,
       "precision": 0.631578947368421,
       "f1": 0.6792452830188679,
       "pr_auc": 0.5290171858216971,
       "roc_auc": 0.7978105149344505,
       "accuracy": 0.83,
+      "flag_rate": 0.285,
       "confusion_matrix": {
         "tn": 130,
         "fp": 21,
         "fn": 13,
         "tp": 36
       },
-      "hyperparameters": {},
+      "is_champion": false,
       "is_baseline": true,
-      "flag_rate": 0.285
+      "test_brier": 0.17,
+      "test_brier_base_rate": 0.18497500000000003,
+      "test_ece": 0.16999999999999998
     }
   ],
   "baseline_agreement": {
-    "test_decision_agreement": 1.0,
-    "flagged_by_champion_not_rule": 0,
-    "flagged_by_rule_not_champion": 0,
-    "n_test": 200,
-    "note": "Share of test claims on which the champion's flag/no-flag decision is identical to the 'incident_severity == Major Damage' rule. 1.0 means the model adds no decision-level information beyond that rule (it can still add ranking)."
-  },
-  "selection": {
-    "summary": "data/processed/model_selection_summary.csv",
-    "decision": "data/processed/champion_decision.json"
-  },
-  "cost_optimal_threshold": {
-    "threshold": 0.01,
-    "total_cost": 150500.0,
-    "recall": 1.0,
-    "precision": 0.2475
+    "test_decision_agreement": 0.96,
+    "flagged_by_champion_not_rule": 6,
+    "flagged_by_rule_not_champion": 2,
+    "n_test": 200
   },
   "n_train": 800,
   "n_test": 200,
@@ -121,8 +136,12 @@
     ],
     "ablation_report": "data/processed/proxy_feature_ablation.csv"
   },
-  "uncertainty": {
-    "cross_validation_mean_std": "data/processed/cross_validation_results.csv",
-    "holdout_bootstrap_95ci": "data/processed/holdout_bootstrap_ci.csv"
+  "artifacts": {
+    "selection": "data/processed/model_selection_summary.csv",
+    "pairwise_tests": "data/processed/pairwise_tests.csv",
+    "decision": "data/processed/champion_decision.json",
+    "calibration": "data/processed/calibration_summary.csv",
+    "cost_sensitivity": "data/processed/cost_sensitivity.csv",
+    "bootstrap_ci": "data/processed/holdout_bootstrap_ci.csv"
   }
 }

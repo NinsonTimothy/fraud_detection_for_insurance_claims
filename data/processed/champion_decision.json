@@ -1,115 +1,75 @@
 {
   "protocol": {
-    "data": "training split only (800 rows); the 200-row test split is never used for selection",
-    "outer_cv": "5-fold stratified x 3 repeats = 15 paired folds",
-    "inner_cv": "5-fold, picks hyperparameters (PR-AUC) and threshold (F1) per candidate",
-    "selection_rule": "highest mean outer-fold F1 at each candidate's own tuned threshold; must not be worse than the 'major_damage_rule' baseline; ties within 0.005 F1 broken by PR-AUC",
-    "significance_test": "Nadeau-Bengio corrected resampled t-test (two-sided) on the paired fold differences"
+    "data": "development split only (800 rows); the 200-row test split is used once, for reporting",
+    "cv": "repeated stratified 5-fold x 10 repeats = 50 paired folds",
+    "thresholds": "each ML candidate: F1-optimal threshold on inner 5-fold out-of-fold predictions; rule: fixed (binary output)",
+    "imbalance": "class weighting only (no SMOTE)",
+    "significance_test": "Nadeau-Bengio corrected resampled t-test, two-sided, alpha=0.05",
+    "selection_rule": "best mean PR-AUC among ML models, unless a simpler model (LR < RF < XGB) is not significantly worse on PR-AUC, in which case the simplest such model; the rule baseline is reported but not eligible"
   },
-  "measured_champion": "random_forest",
-  "champion": "random_forest",
-  "beats_or_matches_baseline_on_f1": false,
-  "tie_broken_by_pr_auc": false,
-  "tied_candidates": [
-    "random_forest"
+  "best_pr_auc_model": "logistic_regression",
+  "champion": "logistic_regression",
+  "decision_trail": [
+    {
+      "candidate": "logistic_regression",
+      "decision": "best PR-AUC \u2014 qualifies"
+    }
   ],
-  "champion_cv": {
-    "f1_mean": 0.6243122369368816,
-    "recall_mean": 0.6615384615384615,
-    "precision_mean": 0.5936737449342248,
-    "pr_auc_mean": 0.5170751387940081,
-    "roc_auc_mean": 0.7648747086247086,
-    "flag_rate_mean": 0.27749999999999997,
-    "threshold_mean": 0.42
-  },
-  "baseline_cv": {
-    "f1_mean": 0.6285571310166688,
-    "recall_mean": 0.6615384615384615,
-    "precision_mean": 0.6009663302941203,
-    "pr_auc_mean": 0.4817782012157686,
-    "roc_auc_mean": 0.757647100374373,
-    "flag_rate_mean": 0.27375,
-    "threshold_mean": 0.05
-  },
-  "champion_vs_baseline": {
-    "f1": {
-      "mean_difference": -0.004244894079787135,
-      "t": -1.3068486446700878,
-      "p_corrected": 0.21232388470390773,
-      "significant_at_0_05": false
+  "champion_vs_rule": {
+    "pr_auc": {
+      "a": "logistic_regression",
+      "b": "major_damage_rule",
+      "metric": "pr_auc",
+      "mean_difference": 0.03760758731307101,
+      "a_wins_folds": 44,
+      "n_folds": 50,
+      "t": 1.8153455977248707,
+      "p_corrected": 0.07559312169864434,
+      "significant": false
     },
     "recall": {
-      "mean_difference": 0.0,
-      "t": 0.0,
-      "p_corrected": 1.0,
-      "significant_at_0_05": false
+      "a": "logistic_regression",
+      "b": "major_damage_rule",
+      "metric": "recall",
+      "mean_difference": -0.00656410256410257,
+      "a_wins_folds": 20,
+      "n_folds": 50,
+      "t": -0.21278297381879363,
+      "p_corrected": 0.8323790131410795,
+      "significant": false
     },
-    "pr_auc": {
-      "mean_difference": 0.035296937578239526,
-      "t": 1.6525095775110943,
-      "p_corrected": 0.12067234318128316,
-      "significant_at_0_05": false
-    },
-    "roc_auc": {
-      "mean_difference": 0.007227608250335534,
-      "t": 0.5665012813138213,
-      "p_corrected": 0.5800220044610733,
-      "significant_at_0_05": false
+    "f1": {
+      "a": "logistic_regression",
+      "b": "major_damage_rule",
+      "metric": "f1",
+      "mean_difference": -0.055933920419876465,
+      "a_wins_folds": 2,
+      "n_folds": 50,
+      "t": -2.948086630720518,
+      "p_corrected": 0.00488687288643666,
+      "significant": true
     }
   },
-  "champion_vs_others": {
-    "logistic_regression": {
-      "f1": {
-        "mean_difference": 0.04953504224455905,
-        "t": 2.3221699893051007,
-        "p_corrected": 0.03581094538752483,
-        "significant_at_0_05": true
-      },
-      "recall": {
-        "mean_difference": 0.004957264957264954,
-        "t": 0.21033248506764204,
-        "p_corrected": 0.8364385895229439,
-        "significant_at_0_05": false
-      },
-      "pr_auc": {
-        "mean_difference": 0.001664735504182365,
-        "t": 0.07847207823102267,
-        "p_corrected": 0.9385631095066345,
-        "significant_at_0_05": false
-      },
-      "roc_auc": {
-        "mean_difference": 0.013427270961361886,
-        "t": 1.1945919727268255,
-        "p_corrected": 0.2520931070497871,
-        "significant_at_0_05": false
-      }
-    },
-    "xgboost": {
-      "f1": {
-        "mean_difference": 0.005217990198518245,
-        "t": 0.6644822804998316,
-        "p_corrected": 0.5171775763274092,
-        "significant_at_0_05": false
-      },
-      "recall": {
-        "mean_difference": 0.006752136752136743,
-        "t": 0.8023406281057409,
-        "p_corrected": 0.4357648887577812,
-        "significant_at_0_05": false
-      },
-      "pr_auc": {
-        "mean_difference": 0.004026599493585233,
-        "t": 0.17459549064587462,
-        "p_corrected": 0.8638972266247402,
-        "significant_at_0_05": false
-      },
-      "roc_auc": {
-        "mean_difference": 0.000943791057427427,
-        "t": 0.06225033393252348,
-        "p_corrected": 0.9512434882280489,
-        "significant_at_0_05": false
-      }
-    }
+  "champion_significantly_beats_rule_on": [],
+  "rule_significantly_beats_champion_on": [
+    "f1"
+  ],
+  "champion_cv_means": {
+    "pr_auc_mean": 0.520395351205618,
+    "roc_auc_mean": 0.7547772700784064,
+    "f1_mean": 0.5728921023803992,
+    "recall_mean": 0.6552307692307693,
+    "precision_mean": 0.5135922674053203,
+    "flag_rate_mean": 0.319125,
+    "threshold_mean": 0.528
   },
-  "pairwise_tests_csv": "data/processed/champion_pairwise_tests.csv"
+  "rule_cv_means": {
+    "pr_auc_mean": 0.48278776389254685,
+    "roc_auc_mean": 0.7578023945751218,
+    "f1_mean": 0.6288260228002757,
+    "recall_mean": 0.6617948717948718,
+    "precision_mean": 0.6018303581332435,
+    "flag_rate_mean": 0.27375,
+    "threshold_mean": 0.5
+  }
 }

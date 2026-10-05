@@ -1,13 +1,19 @@
 {
-  "model": "random_forest",
-  "roc_auc_verdict": "significantly_inverted",
+  "model": "logistic_regression",
+  "field_mapping_counts": {
+    "unmappable": 25,
+    "approximate": 5,
+    "direct": 4
+  },
+  "n_features_variable_on_oracle": 11,
+  "roc_auc_verdict": "indistinguishable_from_random",
   "internal_holdout_metrics": {
-    "roc_auc": 0.7924043789701309,
-    "pr_auc": 0.5457352376509063
+    "roc_auc": 0.815515610217597,
+    "pr_auc": 0.5576907131644
   },
   "oracle_metrics": {
-    "roc_auc": 0.46053933824691634,
-    "pr_auc": 0.05414472476798212,
+    "roc_auc": 0.518674465543026,
+    "pr_auc": 0.06235348692783262,
     "recall": 0.0,
     "precision": 0.0,
     "confusion_matrix": {
@@ -16,17 +22,17 @@
       "fn": 923,
       "tp": 0
     },
-    "operating_threshold": 0.45
+    "operating_threshold": 0.27
   },
   "oracle_metrics_ci": {
     "roc_auc": {
-      "ci_lower": 0.4413348281463087,
-      "ci_upper": 0.479753991072287,
+      "ci_lower": 0.49948122820238483,
+      "ci_upper": 0.5381404487887638,
       "n_boot_effective": 1000
     },
     "pr_auc": {
-      "ci_lower": 0.050642537602476584,
-      "ci_upper": 0.05848457128179261,
+      "ci_lower": 0.057633575662492824,
+      "ci_upper": 0.06853979177777363,
       "n_boot_effective": 1000
     },
     "recall": {
@@ -54,7 +60,7 @@
   "oracle_fraud_rate": 0.05985732814526589,
   "n_features_total": 69,
   "n_features_constant_on_oracle": 58,
-  "share_of_shap_weight_constant_on_oracle": 0.9295815084884639,
+  "share_of_shap_weight_constant_on_oracle": 0.8799836250466241,
   "fields_mapped_for_real": [
     "age",
     "insured_sex",
@@ -62,7 +68,9 @@
     "police_report_available",
     "witnesses",
     "number_of_vehicles_involved",
-    "auto_year"
+    "incident_date",
+    "auto_year",
+    "policy_bind_date"
   ],
-  "generated_at": "2026-10-04T18:01:01.624988+00:00"
+  "generated_at": "2026-10-04T20:11:42.125933+00:00"
 }
