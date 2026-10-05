@@ -18,9 +18,9 @@ def roc_ci_verdict(roc: float, ci: dict | None) -> tuple[str, str]:
                 f"{span} lies entirely BELOW 0.5: the model ranks genuine fraud systematically LOWER than "
                 "legitimate claims on this data. This is worse than random, not 'random'")
     if lo > 0.5:
-        return ("better than random, but weak",
+        return ("better than random",
                 f"{span} lies entirely above 0.5: some ranking signal transfers, but far less than internally")
-    return "indistinguishable from random", f"{span} contains 0.5: no measurable ranking signal"
+    return "no measurable ranking signal", f"{span} contains 0.5: no measurable ranking signal"
 
 
 def champion_vs_rule_sentence(decision: dict) -> str:

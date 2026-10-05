@@ -45,7 +45,7 @@ def test_oracle_wording_is_derived_from_ci():
 
 def test_roc_ci_verdict_three_cases():
     assert roc_ci_verdict(0.46, {"ci_lower": 0.44, "ci_upper": 0.48})[0] == "significantly inverted ranking"
-    assert roc_ci_verdict(0.50, {"ci_lower": 0.48, "ci_upper": 0.52})[0] == "indistinguishable from random"
+    assert roc_ci_verdict(0.50, {"ci_lower": 0.48, "ci_upper": 0.52})[0] == "no measurable ranking signal"
     assert roc_ci_verdict(0.60, {"ci_lower": 0.55, "ci_upper": 0.65})[0].startswith("better than random")
 
 

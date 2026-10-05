@@ -291,10 +291,19 @@ def main():
         json.dump(metrics, f, indent=2, default=float)
 
     Xt_s.assign(y_true=yt, y_proba=test_proba[champ]).to_csv(PROCESSED_DIR / "risk_scores_test.csv", index=False)
+    # Development out-of-fold champion scores: the reference distribution the
+    # Score-a-claim page uses for "higher than N% of development claims"
+    # (the test set is never used as a UI reference).
+    pd.DataFrame({"row_id": dev_ids_ordered(X_dev), "y_true": yd, "oof_score": champ_oof}).to_csv(
+        PROCESSED_DIR / "dev_oof_scores.csv", index=False)
     X_test.assign(y_true=yt).to_csv(PROCESSED_DIR / "psi_reference_features.csv", index=False)
     print(summary.round(3).to_string(index=False))
     print(json.dumps({"champion": champ, "calibration": calib["chosen"], "operating_threshold": operating_threshold,
                       "bands": {k: edges[k] for k in ("medium_edge", "high_edge")}, "agreement_with_rule": agreement}, indent=2))
+
+
+def dev_ids_ordered(X_dev: pd.DataFrame) -> list[int]:
+    return [int(i) for i in X_dev.index]
 
 
 def _reliability_png(rel: pd.DataFrame, champion: str):

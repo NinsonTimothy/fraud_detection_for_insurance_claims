@@ -147,7 +147,7 @@ def evaluate_shipped_model_on_oracle():
     elif roc_ci and roc_ci["ci_lower"] > 0.5:
         verdict = "better_than_random_but_degraded"
     else:
-        verdict = "indistinguishable_from_random"
+        verdict = "no_measurable_ranking_signal"
     variable_cols = sorted(set(X_oracle.columns) - constant_cols)
     univariate_auc_table(X_oracle, y_oracle, variable_cols).to_csv(EXTERNAL_DIR / "oracle_univariate_auc.csv", index=False)
     mapping = field_mapping_table()
