@@ -157,3 +157,15 @@ def oracle_roc_verdict(roc: float, ci: dict | None) -> tuple[str, str]:
     dashboard and the generated docs can never disagree."""
     from app.ml.reporting import roc_ci_verdict
     return roc_ci_verdict(roc, ci)
+
+
+@st.cache_data
+def load_witness_fraud_rates() -> dict:
+    """Fraud rate per witness count, computed from the cleaned training data (never typed)."""
+    df = pd.read_csv(PROJECT_ROOT / "data" / "cleaned" / "insurance_claims_cleaned.csv")
+    return {int(k): float(v) for k, v in df.groupby("witnesses")["fraud_reported"].apply(lambda s: (s == "Y").mean()).items()}
+
+
+@st.cache_data
+def load_cleaned_data() -> pd.DataFrame:
+    return pd.read_csv(PROJECT_ROOT / "data" / "cleaned" / "insurance_claims_cleaned.csv", keep_default_na=False, na_values=[""])
