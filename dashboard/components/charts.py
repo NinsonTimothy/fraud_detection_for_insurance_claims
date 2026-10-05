@@ -18,29 +18,6 @@ _LAYOUT = dict(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font
                margin=dict(l=10, r=10, t=40, b=10))
 
 
-def risk_gauge(probability: float, threshold: float, medium_edge: float, high_edge: float) -> go.Figure:
-    """Fraud-risk score as a 0-100 gauge, banded Low/Medium/High, with the
-    review threshold drawn as a marker line."""
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=round(probability * 100, 1),
-        number={"suffix": "%", "font": {"size": 40}},
-        title={"text": "Fraud-risk score", "font": {"size": 14, "color": MUTED}},
-        gauge={
-            "axis": {"range": [0, 100], "ticksuffix": "%"},
-            "bar": {"color": TEXT, "thickness": 0.25},
-            "steps": [
-                {"range": [0, medium_edge * 100], "color": f"{SUCCESS}55"},
-                {"range": [medium_edge * 100, high_edge * 100], "color": f"{WARNING}55"},
-                {"range": [high_edge * 100, 100], "color": f"{DANGER}55"},
-            ],
-            "threshold": {"line": {"color": ACCENT, "width": 4}, "thickness": 0.9, "value": threshold * 100},
-        },
-    ))
-    fig.update_layout(height=260, **_LAYOUT)
-    return fig
-
-
 def reasons_bar(reasons: list[dict], title: str = "What drove this score") -> go.Figure:
     """Horizontal SHAP contribution chart: one bar per claim FIELD (one-hot
     dummies already grouped by the explainer), labelled with the claim's
@@ -62,48 +39,26 @@ def reasons_bar(reasons: list[dict], title: str = "What drove this score") -> go
     return fig
 
 
-def score_context_histogram(reference_scores: np.ndarray, this_score: float, threshold: float) -> go.Figure:
-    """Where this claim sits relative to the scores of the held-out test
-    claims (the model's 'normal' output distribution)."""
-    fig = go.Figure(go.Histogram(x=reference_scores, nbinsx=25, marker_color=f"{ACCENT}99", name="Test claims"))
-    fig.add_vline(x=threshold, line_dash="dash", line_color=WARNING,
-                  annotation_text="review threshold", annotation_position="top left")
-    fig.add_vline(x=this_score, line_color=DANGER, line_width=3,
-                  annotation_text="this claim", annotation_position="top right")
-    fig.update_layout(title="This claim vs. 200 held-out test claims", height=260,
-                      xaxis_title="Fraud-risk score", yaxis_title="Claims", xaxis_range=[0, 1],
-                      showlegend=False, **_LAYOUT)
-    return fig
-
-
-def claim_breakdown_donut(injury: float, prop: float, vehicle: float) -> go.Figure:
-    fig = go.Figure(go.Pie(
-        labels=["Injury", "Property", "Vehicle"], values=[injury, prop, vehicle], hole=0.55,
-        marker_colors=[DANGER, WARNING, ACCENT], textinfo="label+percent",
-    ))
-    fig.update_layout(title="Claim amount breakdown", height=260, showlegend=False, **_LAYOUT)
-    return fig
-
-
-def grade_distribution_bar(df: pd.DataFrame) -> go.Figure:
-    counts = df["risk_grade"].value_counts().reindex(GRADE_ORDER, fill_value=0)
-    fig = go.Figure(go.Bar(
-        x=counts.index, y=counts.values, marker_color=[GRADE_COLOURS[g] for g in counts.index],
-        text=[f"{g}: {n}" for g, n in zip(counts.index, counts.values)], textposition="auto",
-    ))
-    fig.update_layout(title="Claims by risk grade", height=300, yaxis_title="Claims", **_LAYOUT)
-    return fig
-
-
-def probability_histogram(df: pd.DataFrame, threshold: float) -> go.Figure:
+def probability_histogram(df: pd.DataFrame, threshold: float, edges: dict | None = None) -> go.Figure:
+    """Score distribution with the THREE separately-labelled lines (UI-15):
+    the two band edges (from the risk-policy artifact) and the review
+    threshold. Labels sit at staggered heights so they never overlap."""
     fig = go.Figure()
     for g in GRADE_ORDER:
         sub = df[df["risk_grade"] == g]
         if len(sub):
             fig.add_trace(go.Histogram(x=sub["fraud_probability"], name=g, marker_color=GRADE_COLOURS[g],
                                        xbins=dict(start=0, end=1, size=0.04)))
-    fig.add_vline(x=threshold, line_dash="dash", line_color=ACCENT, annotation_text=f"review threshold {threshold:.2f}")
-    fig.update_layout(title="Fraud-risk score distribution", barmode="stack", height=300,
+    lines = []
+    if edges:
+        lines += [(edges["medium_edge"], f"Low|Medium {edges['medium_edge']:.2f}", MUTED, "dot"),
+                  (edges["high_edge"], f"Medium|High {edges['high_edge']:.2f}", MUTED, "dot")]
+    lines.append((threshold, f"review threshold {threshold:.2f}", ACCENT, "dash"))
+    for i, (x, label, colour, dash) in enumerate(lines):
+        fig.add_vline(x=x, line_dash=dash, line_color=colour, line_width=2)
+        fig.add_annotation(x=x, y=1.0 - 0.11 * i, yref="paper", text=label, showarrow=False, xanchor="left",
+                           xshift=4, font=dict(size=11, color=colour), bgcolor="rgba(11,15,25,0.75)")
+    fig.update_layout(title="Fraud-risk score distribution", barmode="stack", height=320,
                       xaxis_title="Fraud-risk score", yaxis_title="Claims", xaxis_range=[0, 1], **_LAYOUT)
     return fig
 
@@ -132,7 +87,7 @@ def amount_vs_probability(df: pd.DataFrame, threshold: float) -> go.Figure:
                 hovertemplate="claim %{customdata}<br>$%{x:,.0f}<br>p=%{y:.2f}<extra>" + g + "</extra>",
             ))
     fig.add_hline(y=threshold, line_dash="dash", line_color=ACCENT)
-    fig.update_layout(title="Claim amount vs. fraud-risk score", height=320, xaxis_title="Total claim amount ($)",
+    fig.update_layout(title="Claim amount vs. fraud-risk score", height=260, xaxis_title="Total claim amount ($)",
                       yaxis_title="Fraud-risk score", yaxis_range=[0, 1], **_LAYOUT)
     return fig
 
@@ -156,12 +111,12 @@ def driver_frequency_bar(reasons_per_claim: list[list[dict]], top_n: int = 10) -
     return fig
 
 
-def field_driver_bar(field_shap: pd.DataFrame, labels: dict, top_n: int = 12) -> go.Figure:
+def field_driver_bar(field_shap: pd.DataFrame, labels: dict, top_n: int = 8) -> go.Figure:
     """A1: mean |SHAP| per PARENT raw field across the claims in view."""
     s = field_shap.abs().mean().sort_values().tail(top_n)
     fig = go.Figure(go.Bar(x=s.values, y=[labels.get(i, i) for i in s.index], orientation="h", marker_color=ACCENT,
                            text=[f"{v:.3f}" for v in s.values], textposition="auto"))
-    fig.update_layout(title="Top drivers in this view (mean |SHAP| per claim field)", height=max(280, 30 * len(s)),
+    fig.update_layout(title="Top drivers in this view (mean |SHAP| per claim field)", height=max(300, 38 * len(s)),
                       xaxis_title="Mean |SHAP contribution|", yaxis_title="", **_LAYOUT)
     return fig
 

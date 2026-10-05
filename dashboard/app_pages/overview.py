@@ -6,6 +6,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 _dashboard_root = str(Path(__file__).resolve().parents[1])
@@ -98,7 +99,7 @@ if oracle_results_available():
     st.markdown(
         f"""<div class="aeg-note" style="border-color:{DANGER}55;background:{DANGER}14;">
         <b>⚠ External validation warning — deliberately not hidden.</b><br/>
-        Scored against Oracle (a real, independently-collected 15,420-row auto-insurance-fraud dataset
+        Scored against Oracle (a real, independently collected {oracle['oracle_n_rows']:,}-row auto-insurance-fraud dataset
         this model never trained on), the model's {long_text}. See the "Monitoring & external validation"
         page for the root cause.</div>""",
         unsafe_allow_html=True,
@@ -108,20 +109,19 @@ else:
 
 st.write("")
 st.markdown("#### Model comparison (internal holdout)")
-display_comparison = comparison[["model", "threshold", "recall", "precision", "f1", "pr_auc", "roc_auc", "accuracy"]].copy()
-if not bootstrap_df.empty:
-    for metric in ("recall", "pr_auc", "roc_auc"):
-        display_comparison[f"{metric}_95ci"] = display_comparison.apply(
-            lambda row: (lambda ci: f"[{ci[0]:.3f}, {ci[1]:.3f}]" if ci else "—")(
-                bootstrap_ci_for(bootstrap_df, row["model"], metric)
-            ),
-            axis=1,
-        )
+# UI-12: no accuracy column (misleading at a 25% base rate); each bootstrap
+# 95% CI is merged into its metric cell.
+def _cell(model, metric, value):
+    ci = bootstrap_ci_for(bootstrap_df, model, metric) if not bootstrap_df.empty else None
+    return f"{value:.3f} [{ci[0]:.3f}–{ci[1]:.3f}]" if ci else f"{value:.3f}"
+
+display_comparison = pd.DataFrame([{
+    "model": r["model"], "threshold": f"{r['threshold']:.2f}",
+    **{m: _cell(r["model"], m, r[m]) for m in ("recall", "precision", "f1", "pr_auc", "roc_auc")},
+} for _, r in comparison.iterrows()])
 st.dataframe(display_comparison, width="stretch", hide_index=True)
-st.caption(
-    "`_95ci` columns are bootstrap 95% confidence intervals on this fixed holdout split "
-    "(`data/processed/holdout_bootstrap_ci.csv`) — not the same as the cross-fold mean±SD above."
-)
+st.caption("Values on the 200-row test set; brackets are bootstrap 95% confidence intervals on that fixed split "
+           "(`data/processed/holdout_bootstrap_ci.csv`), not the cross-fold mean ± SD above.")
 
 if "session_scored_count" in st.session_state:
     st.write("")

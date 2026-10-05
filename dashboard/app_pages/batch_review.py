@@ -27,7 +27,7 @@ import streamlit as st
 _root = str(Path(__file__).resolve().parents[1])
 if _root not in sys.path:
     sys.path.append(_root)
-from components.charts import (amount_vs_probability, field_driver_bar, grade_distribution_bar,
+from components.charts import (amount_vs_probability, field_driver_bar,
                                probability_histogram, reasons_bar, score_by_category)
 from components.data_access import SAMPLES_DIR, get_scoring_service, models_are_available, new_db_session
 from components.theme import inject_css, kpi_card, page_header
@@ -134,11 +134,11 @@ st.caption(f"Source **{st.session_state.get('batch_source')}** · {len(view):,} 
 # --------------------------------------------------------------- KPIs (A1)
 k = st.columns(6)
 cards = [("Claims in view", f"{len(view):,}", f"of {len(result):,} scored"),
-         ("Flagged for review", f"{int(view['flagged'].sum()):,}", f"score ≥ {threshold:.2f}"),
+         ("Flagged", f"{int(view['flagged'].sum()):,}", f"for review · score ≥ {threshold:.2f}"),
          ("High", f"{int((view['risk_grade'] == 'High').sum()):,}", "risk band"),
          ("Medium", f"{int((view['risk_grade'] == 'Medium').sum()):,}", "risk band"),
          ("Low", f"{int((view['risk_grade'] == 'Low').sum()):,}", "risk band"),
-         ("Mean fraud-risk score", f"{view['fraud_probability'].mean():.2f}" if len(view) else "—", "claims in view")]
+         ("Mean score", f"{view['fraud_probability'].mean():.2f}" if len(view) else "—", "fraud-risk score, in view")]
 for col, (t, v, sub) in zip(k, cards):
     with col:
         kpi_card(t, v, sub)
@@ -147,13 +147,13 @@ if view.empty:
     st.stop()
 
 # ------------------------------------------------------------- charts (A1)
-c1, c2 = st.columns(2)
-c1.plotly_chart(grade_distribution_bar(view), width="stretch")
-c2.plotly_chart(probability_histogram(view, threshold), width="stretch")
+# UI-15: no risk-grade bar (it duplicated the KPI cards). Histogram carries the
+# band edges and the review threshold; the scatter is smaller and last.
+st.plotly_chart(probability_histogram(view, threshold, get_scoring_service().band_edges), width="stretch")
 c3, c4 = st.columns(2)
 if "incident_severity" in view:
-    c3.plotly_chart(score_by_category(view, "incident_severity", "Fraud-risk score by incident severity"), width="stretch")
-c4.plotly_chart(field_driver_bar(st.session_state["batch_field_shap"].loc[view.index], LABELS), width="stretch")
+    c3.plotly_chart(score_by_category(view, "incident_severity", "Mean fraud-risk score by incident severity"), width="stretch")
+c4.plotly_chart(field_driver_bar(st.session_state["batch_field_shap"].loc[view.index], LABELS, top_n=8), width="stretch")
 st.plotly_chart(amount_vs_probability(view, threshold), width="stretch")
 
 # ---------------------------------------------- top 20 + drill-down (A3)
@@ -178,7 +178,7 @@ with st.container(border=True):
     st.markdown(f"##### Claim #{pick} — fraud-risk score {row['fraud_probability']:.2f} · {row['risk_grade']} band · "
                 f"{'flagged for review' if row['flagged'] else 'not flagged'}")
     st.markdown(f"**Recommended next step:** {row['recommended_action']}")
-    up, down = split_reasons(row["top_reasons"], k=5)
+    up, down = split_reasons(row["top_reasons"], k=3)  # UI-15: top 3 each
     a, b = st.columns(2)
     a.markdown("**Factors increasing risk**\n" + ("\n".join(f"- {r['sentence']}" for r in up) or "- none"))
     b.markdown("**Factors reducing risk**\n" + ("\n".join(f"- {r['sentence']}" for r in down) or "- none"))

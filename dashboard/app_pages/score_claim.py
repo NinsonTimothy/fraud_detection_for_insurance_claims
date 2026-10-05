@@ -32,7 +32,7 @@ import streamlit as st
 _dashboard_root = str(Path(__file__).resolve().parents[1])
 if _dashboard_root not in sys.path:
     sys.path.append(_dashboard_root)
-from components.charts import claim_breakdown_donut, reasons_bar, risk_gauge, score_context_histogram
+from components.charts import reasons_bar
 from components.data_access import (
     PROCESSED_DIR, get_scoring_service, load_field_importance, models_are_available, new_db_session,
 )
@@ -232,40 +232,38 @@ if st.button("Score claim", type="primary", width="stretch", disabled=bool(error
     st.session_state["last_score"] = {"result": result, "payload": payload, "claim_id": claim_id}
 
 if "last_score" in st.session_state:
+    # UI-14: no gauge, no test-set histogram, no amount donut (the derived-values
+    # strip already shows the shares). The score is a 0–1 fraud-risk score,
+    # never a percentage. Band edges come from the model's risk-policy artifact.
     res = st.session_state["last_score"]["result"]
-    pay = st.session_state["last_score"]["payload"]
     p, thr, grade = res["fraud_probability"], res["operating_threshold"], res["risk_grade"]
     colour = {"Low": SUCCESS, "Medium": WARNING, "High": DANGER}[grade]
+    edges = service.band_edges or {"medium_edge": MEDIUM_RISK_EDGE, "high_edge": HIGH_RISK_EDGE}
 
     st.divider()
-    c1, c2 = st.columns([1, 1.4])
-    with c1:
-        st.plotly_chart(risk_gauge(p, thr, MEDIUM_RISK_EDGE, HIGH_RISK_EDGE), width="stretch")
-    with c2:
-        st.markdown(f"### {risk_badge(grade)} &nbsp; Fraud-risk score {p:.2f}", unsafe_allow_html=True)
-        st.markdown(
-            f"<div class='aeg-card' style='border-color:{colour}88'>"
-            f"<b>{grade} band</b> · <b>{'Flagged for review' if p >= thr else 'Not flagged'}</b> (review threshold {thr:.2f})"
-            f"<br/><b>Recommended next step:</b> {res['recommended_action']}"
-            f"<br/><span style='color:{MUTED}'>Saved as claim #{st.session_state['last_score']['claim_id']} · "
-            f"model {res['model_version']}</span></div>", unsafe_allow_html=True)
+    st.markdown(f"### {risk_badge(grade)} &nbsp; Fraud-risk score {p:.2f}", unsafe_allow_html=True)
+    oof_path = PROCESSED_DIR / "dev_oof_scores.csv"
+    pct_text = ""
+    if oof_path.exists():
+        ref = pd.read_csv(oof_path, usecols=["oof_score"])["oof_score"].to_numpy()
+        pct_text = (f"<br/>Scores higher than {(ref < p).mean():.0%} of the {len(ref)} development claims "
+                    "(out-of-fold scores, so no claim is scored by a model that saw it).")
+    st.markdown(
+        f"<div class='aeg-card' style='border-color:{colour}88'>"
+        f"<b>{grade} band</b> · <b>{'Flagged for review' if p >= thr else 'Not flagged'}</b>"
+        f"<br/><b>Recommended next step:</b> {res['recommended_action']}{pct_text}"
+        f"<br/><span style='color:{MUTED};font-size:12px'>Bands: Low &lt; {edges['medium_edge']:.2f} ≤ Medium &lt; "
+        f"{edges['high_edge']:.2f} ≤ High · review threshold {thr:.2f} · saved as claim "
+        f"#{st.session_state['last_score']['claim_id']} · model {res['model_version']}</span></div>",
+        unsafe_allow_html=True)
+    st.write("")
     f1c, f2c = st.columns(2)
-    f1c.markdown("**Factors increasing risk**\n" + ("\n".join(f"- {r['sentence']}" for r in res["factors_increasing_risk"]) or "- none"))
-    f2c.markdown("**Factors reducing risk**\n" + ("\n".join(f"- {r['sentence']}" for r in res["factors_reducing_risk"]) or "- none"))
+    f1c.markdown("**Factors increasing risk**\n" + ("\n".join(f"- {r['sentence']}" for r in res["factors_increasing_risk"][:3]) or "- none"))
+    f2c.markdown("**Factors reducing risk**\n" + ("\n".join(f"- {r['sentence']}" for r in res["factors_reducing_risk"][:3]) or "- none"))
 
     st.plotly_chart(reasons_bar(res["top_reasons"]), width="stretch")
     st.caption("Each bar is one claim field (categorical answers are grouped, so a field appears once, with the "
                "value you entered). Red ▲ raises the risk score, green ▼ lowers it. Bar length = SHAP contribution.")
-
-    c3, c4 = st.columns(2)
-    ref_path = PROCESSED_DIR / "risk_scores_test.csv"
-    if ref_path.exists():
-        ref = pd.read_csv(ref_path, usecols=["y_proba"])["y_proba"].to_numpy()
-        pct = (ref < p).mean()
-        c3.plotly_chart(score_context_histogram(ref, p, thr), width="stretch")
-        c3.caption(f"This claim scores higher than {pct:.0%} of the held-out test claims.")
-    c4.plotly_chart(claim_breakdown_donut(pay["injury_claim"], pay["property_claim"], pay["vehicle_claim"]),
-                    width="stretch")
     with st.expander("All reason codes (table)"):
         st.dataframe(pd.DataFrame(res["top_reasons"])[["rank", "display_name", "display_value", "direction", "impact", "shap_value"]],
                      width="stretch", hide_index=True)
