@@ -1,70 +1,54 @@
 """
-cost_threshold.py — sweeps candidate probability thresholds and picks the
-one that minimizes total expected cost, rather than defaulting to 0.5.
+cost_threshold.py — B6: cost-SENSITIVITY analysis (never the operating threshold).
 
-Cost model (disclosed assumption, not independently cited — same pattern
-used in the sibling MoMo Guard project):
-  - False negative: the claim's own `total_claim_amount` — real money paid
-    out on a claim that should have been investigated.
-  - False positive: a flat analyst-review-time proxy (config.ANALYST_REVIEW_COST,
-    set via the FP_REVIEW_COST env var), editable — every flagged claim costs
-    an investigator's time to clear, whether or not it turns out to be fraud.
-    (PB-21: an earlier draft of this docstring named the constant
-    `FP_REVIEW_COST_GHS`, a leftover from the sibling MoMo Guard project's
-    GHS-denominated cost model — this dataset's claim amounts are USD-style,
-    not GHS, so the suffix was dropped; the underlying dollar figure is an
-    unvalidated proxy either way, see docs/LIMITATIONS.md.)
+The previous model charged a missed fraud its FULL claim amount and charged
+nothing for reviewing a true positive, which mechanically pushed the
+"optimal" threshold toward flagging almost everything (0.07 -> precision =
+base rate). Corrected, disclosed model, at threshold t:
 
-PB-03 note: this dataset's mean `total_claim_amount` is ~$52,762 against a
-default `ANALYST_REVIEW_COST` of $250 — roughly a 211x ratio. Under a pure
-expected-cost objective, missing even one extra real fraud case almost
-always costs more than reviewing ~211 extra false alarms, so
-`find_cost_optimal_threshold()` reliably lands very close to the bottom of
-the swept range (near-universal flagging) rather than some interior
-tradeoff point. This is the correct, reproducible output of the disclosed
-cost model, not a bug in the sweep — but it also means the result isn't a
-useful OPERATING threshold on its own (an analyst team cannot review
-"nearly every claim"). `train.py` reports it as a diagnostic/
-sensitivity-analysis number alongside the model comparison; the actual
-`operating_threshold` used to flag claims is chosen separately, by
-F1-optimal search (see `train.py`'s `_f1_optimal_threshold()`).
+    expected_cost(t) = sum over missed frauds (FN) of
+                           claim_amount x fraudulent_share x recovery_rate
+                     + review_cost x number_flagged        (TP and FP alike)
+
+  fraudulent_share — share of a fraudulent claim's amount that is actually
+                     fraudulent (padding vs fully staged)
+  recovery_rate    — share of that amount the insurer would avoid paying /
+                     recover if the claim were investigated
+  review_cost      — cost of one investigator review
+
+All three are ASSUMPTIONS (config.COST_*), swept over a small grid; the
+result is a table of cost-minimising thresholds, one per assumption set.
 """
 from __future__ import annotations
+
+import itertools
 
 import numpy as np
 import pandas as pd
 
-from app.core.config import ANALYST_REVIEW_COST as FP_REVIEW_COST
-# ^ single source of truth: config.ANALYST_REVIEW_COST reads the
-# FP_REVIEW_COST env var (default 250.0, dataset's own currency units).
-# Previously this module hardcoded its own 250.0 constant, so setting
-# FP_REVIEW_COST had no effect on the actual cost sweep (PB-17).
+from app.core.config import COST_FRAUD_SHARES, COST_RECOVERY_RATES, COST_REVIEW_COSTS
+
+GRID = np.round(np.linspace(0.02, 0.98, 49), 2)
 
 
-def sweep_thresholds(y_true: np.ndarray, y_proba: np.ndarray, claim_amounts: np.ndarray, steps: int = 50) -> pd.DataFrame:
-    thresholds = np.linspace(0.01, 0.99, steps)
-    rows = []
-    for t in thresholds:
-        pred = (y_proba >= t).astype(int)
-        fp_mask = (pred == 1) & (y_true == 0)
-        fn_mask = (pred == 0) & (y_true == 1)
-        tp_mask = (pred == 1) & (y_true == 1)
-        tn_mask = (pred == 0) & (y_true == 0)
-        fn_cost = claim_amounts[fn_mask].sum()
-        fp_cost = fp_mask.sum() * FP_REVIEW_COST
-        rows.append({
-            "threshold": t, "tn": int(tn_mask.sum()), "fp": int(fp_mask.sum()),
-            "fn": int(fn_mask.sum()), "tp": int(tp_mask.sum()),
-            "fn_cost": float(fn_cost), "fp_cost": float(fp_cost),
-            "total_cost": float(fn_cost + fp_cost),
-            "recall": float(tp_mask.sum() / max(1, (y_true == 1).sum())),
-            "precision": float(tp_mask.sum() / max(1, pred.sum())),
-        })
-    return pd.DataFrame(rows)
+def expected_cost(y, proba, amounts, t, review_cost, fraud_share, recovery_rate) -> dict:
+    y, proba, amounts = np.asarray(y), np.asarray(proba), np.asarray(amounts, dtype=float)
+    flag = proba >= t
+    missed = (~flag) & (y == 1)
+    loss = float((amounts[missed] * fraud_share * recovery_rate).sum())
+    review = float(review_cost * flag.sum())
+    tp = int((flag & (y == 1)).sum())
+    return {"threshold": float(t), "missed_fraud_loss": loss, "review_cost_total": review,
+            "total_cost": loss + review, "flag_rate": float(flag.mean()),
+            "recall": tp / max(1, int((y == 1).sum())), "precision": tp / max(1, int(flag.sum()))}
 
 
-def find_cost_optimal_threshold(y_true: np.ndarray, y_proba: np.ndarray, claim_amounts: np.ndarray, steps: int = 50) -> dict:
-    sweep = sweep_thresholds(y_true, y_proba, claim_amounts, steps)
-    best = sweep.loc[sweep["total_cost"].idxmin()]
-    return {"threshold": float(best["threshold"]), "total_cost": float(best["total_cost"]),
-            "recall": float(best["recall"]), "precision": float(best["precision"]), "sweep": sweep}
+def sensitivity_grid(y, proba, amounts) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Returns (optimum per assumption set, full sweep)."""
+    sweep_rows, best_rows = [], []
+    for rc, fs, rr in itertools.product(COST_REVIEW_COSTS, COST_FRAUD_SHARES, COST_RECOVERY_RATES):
+        rows = [{"review_cost": rc, "fraud_share": fs, "recovery_rate": rr,
+                 **expected_cost(y, proba, amounts, t, rc, fs, rr)} for t in GRID]
+        sweep_rows += rows
+        best_rows.append(min(rows, key=lambda r: r["total_cost"]))
+    return pd.DataFrame(best_rows), pd.DataFrame(sweep_rows)

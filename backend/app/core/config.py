@@ -48,3 +48,34 @@ MAX_BATCH_ROWS = int(os.environ.get("MAX_BATCH_ROWS", "5000"))
 # docs/REBUILD_NOTES.md / data/processed/proxy_feature_ablation.csv) —
 # never the default for anything actually shipped.
 INCLUDE_PROXY_FEATURES = os.environ.get("INCLUDE_PROXY_FEATURES", "false").strip().lower() in ("1", "true", "yes")
+
+# ---------------------------------------------------------------------------
+# Pre-defence round 2 — every methodological assumption lives here, is
+# disclosed in the generated docs, and is overridable by environment variable.
+# ---------------------------------------------------------------------------
+def _floats(name: str, default: str) -> tuple[float, ...]:
+    return tuple(float(x) for x in os.environ.get(name, default).split(","))
+
+# Model selection (B3): repeated stratified CV on the 800 development rows.
+CV_SPLITS = int(os.environ.get("AEGIS_CV_SPLITS", "5"))
+CV_REPEATS = int(os.environ.get("AEGIS_CV_REPEATS", "10"))
+SIGNIFICANCE_ALPHA = float(os.environ.get("AEGIS_ALPHA", "0.05"))
+
+# Calibration (B4): a calibration method is adopted only if it lowers the
+# development out-of-fold Brier score by at least this much.
+CALIBRATION_MIN_BRIER_GAIN = float(os.environ.get("AEGIS_CAL_MIN_GAIN", "0.002"))
+ECE_BINS = 10
+
+# Risk bands (B5): derived from development out-of-fold scores.
+# High  = the top-scored claims that together contain HIGH_BAND_FRAUD_CAPTURE of all fraud.
+# Medium = the next claims down until MEDIUM_BAND_FRAUD_CAPTURE of all fraud is contained.
+HIGH_BAND_FRAUD_CAPTURE = float(os.environ.get("AEGIS_HIGH_CAPTURE", "0.50"))
+MEDIUM_BAND_FRAUD_CAPTURE = float(os.environ.get("AEGIS_MEDIUM_CAPTURE", "0.85"))
+
+# Cost sensitivity analysis (B6). Expected cost at threshold t =
+#   sum over MISSED frauds of (claim amount x fraudulent share x recovery rate)
+#   + review cost x (number of claims flagged, true AND false positives).
+# Reported as a grid; never used as the operating threshold.
+COST_REVIEW_COSTS = _floats("AEGIS_COST_REVIEW", "250,1000,2500,5000")
+COST_FRAUD_SHARES = _floats("AEGIS_COST_FRAUD_SHARE", "0.1,0.25,0.5")
+COST_RECOVERY_RATES = _floats("AEGIS_COST_RECOVERY", "0.3,0.6,0.9")

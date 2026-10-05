@@ -90,7 +90,7 @@ def run_smote_vs_classweight() -> pd.DataFrame:
     X = engineer_features(train_df)
 
     variants = {
-        "rf_smote_and_classweight (current, shipped)": lambda: ImbPipeline([
+        "rf_smote_and_classweight (previous build)": lambda: ImbPipeline([
             ("smote", SMOTE(random_state=RANDOM_STATE)),
             ("rf", RandomForestClassifier(n_estimators=200, max_depth=5, max_features=0.3,
                                            min_samples_leaf=2, min_samples_split=10,
@@ -102,12 +102,12 @@ def run_smote_vs_classweight() -> pd.DataFrame:
                                            min_samples_leaf=2, min_samples_split=10,
                                            class_weight=None, random_state=RANDOM_STATE)),
         ]),
-        "rf_classweight_only": lambda: SkPipeline([
+        "rf_classweight_only (shipped approach)": lambda: SkPipeline([
             ("rf", RandomForestClassifier(n_estimators=200, max_depth=5, max_features=0.3,
                                            min_samples_leaf=2, min_samples_split=10,
                                            class_weight="balanced_subsample", random_state=RANDOM_STATE)),
         ]),
-        "lr_smote_and_classweight (current, shipped alt.)": lambda: ImbPipeline([
+        "lr_smote_and_classweight (previous build)": lambda: ImbPipeline([
             ("smote", SMOTE(random_state=RANDOM_STATE)),
             ("lr", LogisticRegression(max_iter=2000, class_weight="balanced", random_state=RANDOM_STATE)),
         ]),
@@ -115,7 +115,7 @@ def run_smote_vs_classweight() -> pd.DataFrame:
             ("smote", SMOTE(random_state=RANDOM_STATE)),
             ("lr", LogisticRegression(max_iter=2000, class_weight=None, random_state=RANDOM_STATE)),
         ]),
-        "lr_classweight_only": lambda: SkPipeline([
+        "lr_classweight_only (shipped approach)": lambda: SkPipeline([
             ("lr", LogisticRegression(max_iter=2000, class_weight="balanced", random_state=RANDOM_STATE)),
         ]),
     }
