@@ -32,7 +32,7 @@ Every number, table and claim in Chapters 3–5 that changes because of the pre-
 | 4.3 (new) | Champion test Brier / ECE | not reported | 0.139 / 0.076 | `model_comparison.csv` |
 | 4.2.4 | Proxy ablation PR-AUC off -> on | holdout comparison (used test set) | 0.527 -> 0.692 (dev CV) | `proxy_feature_ablation.csv` |
 | 4.4 | Oracle ROC-AUC (95% CI) | 0.463 (0.443–0.481) | 0.519 (0.499–0.538) | `oracle_validation_report.json` |
-| 4.4 | Oracle wording | random | indistinguishable from random | `reporting.roc_ci_verdict` |
+| 4.4 | Oracle wording | random | no measurable ranking signal | `reporting.roc_ci_verdict` |
 | 4.4 | Oracle fields mapped | 7 or 10 (inconsistent) | {'unmappable': 25, 'approximate': 5, 'direct': 4} | `oracle_field_mapping.csv` |
 | 4.4 | SHAP weight constant on Oracle | 91.7% | 88.0% | `oracle_validation_report.json` |
 | 4.5 | SHAP share of incident severity | 58.8% (two columns) | 19.7% | `shap_importance_by_field.csv` |
@@ -45,7 +45,7 @@ Every number, table and claim in Chapters 3–5 that changes because of the pre-
 - **Champion.** The champion is `logistic_regression`, selected by a rule written in code before results (best PR-AUC unless a simpler model is not significantly worse). Remove wording that presents Random Forest as the measured winner.
 - **Rule baseline.** State plainly what `champion_decision.json` says under `champion_significantly_beats_rule_on` and `rule_significantly_beats_champion_on`.
 - **Scores** are calibrated fraud-risk scores reported with Brier and ECE; say 'fraud-risk score' throughout.
-- **Oracle.** Replace 'random' with the CI-derived verdict ('indistinguishable from random'); add the field-mapping and univariate-AUC tables.
+- **Oracle.** Replace 'random' with the CI-derived verdict ('no measurable ranking signal'); add the field-mapping and univariate-AUC tables.
 - **Witnesses.** Add the fraud-rate-by-witnesses table to Limitations as a dataset artefact.
 - **Cost model.** Present the cost threshold as a sensitivity analysis under stated assumptions, not an optimum.
 - **Leakage.** Describe the test-set leak in model selection, proxy ablation and threshold choice, and its fix.

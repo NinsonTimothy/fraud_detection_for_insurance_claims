@@ -187,7 +187,7 @@ Bootstrap 95% CIs on the test set:
 
 ## 8. Oracle external validation
 
-**Verdict: indistinguishable from random.** ROC-AUC 0.519, 95% CI [0.499, 0.538] contains 0.5: no measurable ranking signal.
+**Verdict: no measurable ranking signal.** ROC-AUC 0.519, 95% CI [0.499, 0.538] contains 0.5: no measurable ranking signal.
 
 Model evaluated: `logistic_regression`. Field mapping: {'unmappable': 25, 'approximate': 5, 'direct': 4} (table: `data/external/oracle/oracle_field_mapping.csv`). Features still variable after mapping: 11 of 69; SHAP weight on constant features: 88.0%.
 

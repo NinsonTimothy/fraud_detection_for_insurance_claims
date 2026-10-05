@@ -6,7 +6,7 @@
     "direct": 4
   },
   "n_features_variable_on_oracle": 11,
-  "roc_auc_verdict": "indistinguishable_from_random",
+  "roc_auc_verdict": "no_measurable_ranking_signal",
   "internal_holdout_metrics": {
     "roc_auc": 0.815515610217597,
     "pr_auc": 0.5576907131644
@@ -72,5 +72,5 @@
     "auto_year",
     "policy_bind_date"
   ],
-  "generated_at": "2026-10-04T21:41:23.674528+00:00"
+  "generated_at": "2026-10-05T12:43:10.728439+00:00"
 }
