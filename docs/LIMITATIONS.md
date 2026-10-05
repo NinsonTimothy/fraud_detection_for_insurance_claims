@@ -4,7 +4,27 @@ This file is deliberately part of the delivered project, not an afterthought —
 a DCIT400 defense goes better when limitations are stated precisely and
 proactively than when a panel member finds them first.
 
-## Pre-defence findings (read these first)
+## Round 2 (read first) — numbers live in CURRENT_METRICS.md
+
+- **Champion is computed, and it is not Random Forest.** A rule written in code before results (best
+  development PR-AUC unless a simpler model is not significantly worse) selects the champion; the current
+  champion and the decision trail are in `docs/CURRENT_METRICS.md`. No ML model significantly beats the
+  one-line Major-Damage rule, and the rule significantly beats the champion on F1 — see section 1 there.
+- **Calibration rule was amended after the first run** (isotonic collapsed scores to a handful of values;
+  sigmoid now preferred). Disclosed in `models/metrics.json` → `calibration.amendment`.
+- **Cost threshold is a sensitivity analysis.** Under most assumption sets the cost-minimising policy is to
+  review nearly every claim, because claim amounts dwarf plausible review costs. It is never the operating threshold.
+- **Total Loss scores close to Minor Damage, far below Major Damage** (sensitivity probe), because Total Loss
+  claims are rarely fraud in this data. It is graded by the derived bands, never auto-approved.
+- **Blank claim components**: if exactly one of injury/property/vehicle is blank it is derived as total minus
+  the other two (found in the 5,000-row demo, where the median default produced a 397% share). Rows whose
+  total contradicts complete parts are rejected, never corrected.
+- **Docker not verified.** No Docker daemon/registry access in the build environment, so `docker compose up --build`
+  was NOT run this round; the 9 Docker tests skip. Do not claim the container build works until it is run.
+- **Fixed hyperparameters.** Candidates use fixed, pre-declared hyperparameters (no search), to keep the
+  50-fold comparison affordable and avoid tuning on 800 rows.
+
+## Pre-defence findings (round 1)
 
 - **The model does not beat a one-line rule at deciding which claims to
   review.** Leak-free selection (training split only, nested CV, 15 paired

@@ -1,3 +1,28 @@
+# Rebuild notes
+
+## Pre-defence round 2 (Oct 2026) — summary
+
+Every number referred to here is in `docs/CURRENT_METRICS.md` (generated). What changed and why:
+
+1. **Strict split.** All selection, ablation, imbalance comparison, calibration, threshold, band and cost
+   decisions use the 800 development rows; the 200 test rows are used once. Row ids per step are recorded
+   (`data/processed/dev_phase_row_ids.json`) and checked by tests.
+2. **Fair comparison with a rule baseline**, 10x5 repeated CV, Nadeau-Bengio corrected t-test, champion
+   computed by a pre-declared parsimony rule (`model_selection.py`). Result: Logistic Regression; it does not
+   significantly beat the Major-Damage rule, and the rule beats it on F1.
+3. **SMOTE removed** (class weighting only; dev-only experiment shows no gain).
+4. **Calibration** chosen on dev OOF Brier; Brier/ECE/reliability for every model. Rule amended after the first
+   run (isotonic -> 12 distinct test scores) — disclosed.
+5. **Derived bands, separate review threshold, cost sensitivity grid** — three thresholds kept apart.
+6. **Explanations** grouped to parent fields with true values; one-hot dtype fixed (the "YES (0)" bug).
+7. **Inconsistent totals rejected** (API 422 / batch rejected-rows report); a single blank component derived exactly.
+8. **Oracle**: field-mapping table, univariate AUC table, CI-derived verdict; result depends on the model
+   (the previous RF was significantly inverted; the current champion's CI contains 0.5).
+9. **Dashboard**: batch redesign (KPIs, charts, filters, top-20 drill-down, downloads), live scoring form,
+   calibration and Oracle views. **Generated docs**: CURRENT_METRICS, THESIS_UPDATE_NOTES, VIVA_PREP.
+
+---
+
 # Rebuild notes — what changed in Aegis Risk Engine vs. the original FYP prototype
 
 This file exists so the numbers in this repo never look like an unexplained

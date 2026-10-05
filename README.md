@@ -200,37 +200,26 @@ python --version
 
 You should see Python 3.12.x.
 
-## 3. Install backend dependencies
+## 3. Install dependencies (backend and dashboard install together)
+
+```bash
+python -m pip install --upgrade pip
+pip install -r backend/requirements.txt -r dashboard/requirements.txt
+```
+
+## 4. Regenerate every artifact (one command)
 
 ```bash
 cd backend
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+python -m app.ml.run_all
 ```
 
-## 4. Clean and prepare the data
-
-```bash
-python -m app.ml.clean_data
-```
-
-This prepares the cleaned dataset used by the training pipeline.
-
-## 5. Train the models
-
-```bash
-python -m app.ml.train
-```
-
-The training pipeline evaluates the supported models and saves the resulting artifacts under `models/`.
-
-## 6. Run external validation
-
-```bash
-python -m app.ml.evaluate_oracle
-```
-
-This evaluates the trained system against the separate Oracle dataset used for external validation and stress testing.
+This cleans the data, runs the development-only imbalance experiment, trains and selects the champion
+(10x5 repeated CV on the 800 development rows, rule baseline included, champion computed by a
+pre-declared rule), calibrates, derives the risk bands and the cost-sensitivity grid, evaluates once on
+the 200 test rows, runs the Oracle external validation and the sensitivity probe, and regenerates
+`docs/CURRENT_METRICS.md`, `docs/THESIS_UPDATE_NOTES.md` and `docs/VIVA_PREP.md`. It takes a few
+minutes. Every number in the docs comes from these artifacts.
 
 ## 7. Run the test suite
 
