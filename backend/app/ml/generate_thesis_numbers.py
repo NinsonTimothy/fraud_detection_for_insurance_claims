@@ -111,7 +111,80 @@ def build() -> str:
     return "\n".join(head + T + tail) + "\n"
 
 
+def build_viva() -> str:
+    """E4: docs/VIVA_PREP.md — examiner questions with short honest answers;
+    every number is read from the artifacts."""
+    m = json.load(open(M / "metrics.json")); dec = json.load(open(P / "champion_decision.json"))
+    orc = json.load(open(O / "oracle_validation_report.json")); pol = json.load(open(M / "risk_policy.json"))
+    rows = {r["model"]: r for r in m["model_comparison"]}; champ = m["primary_model"]; c = rows[champ]
+    rule = rows["major_damage_rule"]; vr = dec["champion_vs_rule"]; ba = m["baseline_agreement"]
+    cal = m["calibration"]; cr = cal["results"]
+    oci = orc["oracle_metrics_ci"]["roc_auc"]; verdict, long = roc_ci_verdict(orc["oracle_metrics"]["roc_auc"], oci)
+    cost = pd.read_csv(P / "cost_sensitivity.csv"); ab = pd.read_csv(P / "proxy_feature_ablation.csv").set_index("variant")
+    probe = pd.read_csv(P / "sensitivity_probe.csv"); sev = probe[probe.field == "incident_severity"].set_index("value")["fraud_risk_score"]
+    df = pd.read_csv(ROOT / "data" / "cleaned" / "insurance_claims_cleaned.csv")
+    wit = df.groupby("witnesses")["fraud_reported"].apply(lambda x: (x == "Y").mean())
+    ua = pd.read_csv(O / "oracle_univariate_auc.csv")
+    trail = "; ".join(f"{t['candidate']}: {t['decision']}" for t in dec["decision_trail"])
+    Q = [
+        ("Why this champion?",
+         f"It was computed, not chosen: the rule written in code before results takes the best development PR-AUC model "
+         f"unless a simpler one is not significantly worse. Best PR-AUC: {dec['best_pr_auc_model']}; trail: {trail}. "
+         f"Champion: {champ} ({cal['chosen']} calibration)."),
+        ("What does the model add over the severity rule?",
+         f"{champion_vs_rule_sentence_safe(dec)} Development CV, champion minus rule: PR-AUC {vr['pr_auc']['mean_difference']:+.3f} "
+         f"(p = {vr['pr_auc']['p_corrected']:.3f}), F1 {vr['f1']['mean_difference']:+.3f} (p = {vr['f1']['p_corrected']:.3f}). "
+         f"Test: champion F1 {c['f1']:.3f} vs rule {rule['f1']:.3f}; PR-AUC {c['pr_auc']:.3f} vs {rule['pr_auc']:.3f}. "
+         f"Same review decision on {_pct(ba['test_decision_agreement'])} of test claims. The model adds a ranking within "
+         "severity groups, calibrated scores and per-claim explanations — not better yes/no decisions."),
+        ("Why does Oracle collapse, and what does the verdict mean?",
+         f"Verdict: {verdict}. {long}. Oracle lacks severity and every claim amount, so "
+         f"{_pct(orc['share_of_shap_weight_constant_on_oracle'])} of the model's SHAP weight sits on features frozen at defaults. "
+         f"The {len(ua)} features that still vary have development AUCs between {ua.auc_development.min():.2f} and "
+         f"{ua.auc_development.max():.2f}: there was almost no transferable signal. 'Inverted' would mean the CI is entirely "
+         "below 0.5 (the previous Random Forest was); 'random' means it contains 0.5."),
+        ("Why do witnesses increase risk?",
+         f"Because this dataset says so: fraud rate by witnesses 0/1/2/3 = {' / '.join(_pct(wit.loc[i]) for i in range(4))}. "
+         "It contradicts real-world red flags, so we removed is_no_witness, kept the raw count, and disclose it as a dataset artefact."),
+        ("Is the score a probability? Is it calibrated?",
+         f"Development out-of-fold Brier: raw {cr['none']['brier']:.3f}, sigmoid {cr['sigmoid']['brier']:.3f}, isotonic "
+         f"{cr['isotonic']['brier']:.3f}; base rate {cr['none']['brier_base_rate']:.3f}. Shipped: {cal['chosen']}. Test Brier "
+         f"{c['test_brier']:.3f}, ECE {c['test_ece']:.3f}. We still call it a fraud-risk score. We amended the calibration rule "
+         "after the first run (isotonic collapsed scores to a few values) and disclose that."),
+        ("Why is the cost threshold only a sensitivity analysis?",
+         f"It depends entirely on assumptions we cannot verify (review cost, fraudulent share, recovery rate). Across "
+         f"{len(cost)} assumption sets the cost-minimising threshold ranges {cost.threshold.min():.2f}–{cost.threshold.max():.2f}, "
+         f"and {int((cost.flag_rate >= 0.99).sum())} sets say 'review everything'. The review threshold "
+         f"({m['operating_threshold']:.2f}) is F1-optimal on development data instead."),
+        ("Why decision support, not automated decisions?",
+         "The model matches a one-line rule on decisions, does not transfer to Oracle, and was trained on 1,000 US claims. "
+         "It recommends a priority; an investigator decides. No band approves or denies anything."),
+        ("What leakage did you find and fix?",
+         "Model selection, the proxy ablation and the imbalance comparison all used CV over all 1,000 rows, so the 200 "
+         "test rows influenced choices. Now every decision uses the 800 development rows; the test set is used once; "
+         "a test checks the recorded row ids. Earlier: a zip-prefix feature that memorised labels (removed)."),
+        ("Why not use hobby/occupation if they help?",
+         f"Development PR-AUC off {ab.loc['proxy_features_off', 'pr_auc_mean']:.3f} vs on {ab.loc['proxy_features_on', 'pr_auc_mean']:.3f}. "
+         "They have no causal story and risk proxy discrimination, so they are off by governance decision, with the cost shown."),
+        ("Any surprising behaviour?",
+         f"Severity probe: Trivial {sev.get('Trivial Damage', float('nan')):.2f}, Minor {sev.get('Minor Damage', float('nan')):.2f}, "
+         f"Major {sev.get('Major Damage', float('nan')):.2f}, Total Loss {sev.get('Total Loss', float('nan')):.2f}. Total Loss "
+         "scores near Minor because Total Loss claims are rarely fraud in this data. Disclosed."),
+    ]
+    lines = ["# Viva prep (auto-generated from artifacts — regenerate after any retrain)", "",
+             "Short honest answers. Numbers come from the artifacts via `python -m app.ml.generate_thesis_numbers`.", ""]
+    for q, a in Q:
+        lines += [f"**Q: {q}**  ", a, ""]
+    return "\n".join(lines)
+
+
+def champion_vs_rule_sentence_safe(dec):
+    from app.ml.reporting import champion_vs_rule_sentence
+    return champion_vs_rule_sentence(dec)
+
+
 def main():
+    (ROOT / "docs" / "VIVA_PREP.md").write_text(build_viva())
     text = build()
     (ROOT / "docs" / "THESIS_UPDATE_NOTES.md").write_text(text)
     old = ROOT / "docs" / "THESIS_NUMBERS.md"

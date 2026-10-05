@@ -132,8 +132,8 @@ def run_smote_vs_classweight() -> pd.DataFrame:
 # file. It (a) cross-validated on all 1,000 rows, so the 200 test rows were
 # used to pick the champion, (b) compared models at a fixed 0.5 threshold,
 # (c) had no simple baseline, and (d) wrote a hardcoded note claiming
-# "recall p=0.0086" when the value it actually computed for the shipped
-# configuration was p=0.498 (not significant). Champion selection now lives
+# a recall p-value from an older configuration instead of the value it
+# actually computed for the shipped configuration (not significant). Champion selection now lives
 # in `app/ml/model_selection.py` and runs inside `python -m app.ml.train`;
 # every p-value is computed and written by code (champion_pairwise_tests.csv,
 # champion_decision.json) and never typed into prose.
