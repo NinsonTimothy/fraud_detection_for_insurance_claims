@@ -49,6 +49,8 @@ class ScoredClaim(Base):
     flagged = Column(Boolean, nullable=False)
     operating_threshold = Column(Float, nullable=False)
     top_reasons = Column(JSON, nullable=True)
+    # A8: engineered values the score was based on (ratios, ages, flags).
+    derived_values = Column(JSON, nullable=True)
     model_version = Column(String(64), nullable=False)
     scored_at = Column(DateTime(timezone=True), default=utcnow, index=True)
 

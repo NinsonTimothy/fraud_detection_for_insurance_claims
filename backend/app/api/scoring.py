@@ -262,6 +262,21 @@ async def score_batch(file: UploadFile, db: Session = Depends(get_db)):
     _validate_zip_and_dates(df)
     df = _clean_zip_column(df)
 
+    # A6: rows whose total_claim_amount contradicts injury + property +
+    # vehicle (tolerance 1.0) are REJECTED with a per-row reason and are not
+    # scored or persisted — never silently corrected.
+    from app.ml.feature_engineering import TOTAL_TOLERANCE, inconsistent_total_mask
+    bad = inconsistent_total_mask(df)
+    rejected_rows = [{
+        "row_index": int(i),
+        "error": (f"total_claim_amount ({float(df.at[i, 'total_claim_amount']):,.2f}) != injury_claim + "
+                  f"property_claim + vehicle_claim ({float(pd.to_numeric(df.loc[i, ['injury_claim', 'property_claim', 'vehicle_claim']]).sum()):,.2f}); "
+                  f"tolerance {TOTAL_TOLERANCE}"),
+    } for i in df.index[bad]]
+    df = df[~bad]
+    if df.empty:
+        raise HTTPException(422, detail={"error": "every row was rejected", "rejected_rows": rejected_rows})
+
     service = FraudScoringService.instance()
     scored = service.score_batch(df)
 
@@ -279,6 +294,9 @@ async def score_batch(file: UploadFile, db: Session = Depends(get_db)):
     claim_ids = persist_scored_claims_batch(db, raw_rows, scored_rows, ingested_via="batch_csv")
     db.commit()
 
+    scored.insert(0, "row_index", [int(i) for i in scored.index])
     scored = scored.reset_index(drop=True)
     scored.insert(0, "claim_id", claim_ids)
-    return scored.to_dict(orient="records")
+    return {"n_received": int(len(df) + len(rejected_rows)), "n_scored": int(len(scored)),
+            "n_rejected": len(rejected_rows), "rejected_rows": rejected_rows,
+            "scored": scored.to_dict(orient="records")}

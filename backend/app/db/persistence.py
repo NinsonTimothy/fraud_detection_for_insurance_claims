@@ -91,7 +91,8 @@ def persist_scored_claim(
     db.add(ScoredClaim(
         claim_id=claim.id, fraud_probability=result["fraud_probability"], risk_grade=result["risk_grade"],
         flagged=result["flagged"], operating_threshold=result["operating_threshold"],
-        top_reasons=result.get("top_reasons"), model_version=result["model_version"],
+        top_reasons=result.get("top_reasons"), derived_values=result.get("derived_values"),
+        model_version=result["model_version"],
     ))
     db.add(AuditLogEntry(
         event_type="claim_scored", claim_id=claim.id,

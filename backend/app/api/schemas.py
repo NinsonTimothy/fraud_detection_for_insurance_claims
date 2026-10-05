@@ -170,6 +170,9 @@ class ScoreOut(BaseModel):
     # DS-01: every score carries the decision-support statement — the system
     # recommends, a human investigator decides.
     decision_support_notice: str | None = None
+    factors_increasing_risk: list[ReasonCode] = []
+    factors_reducing_risk: list[ReasonCode] = []
+    derived_values: dict[str, float] = {}
 
 
 class FeedbackIn(BaseModel):
