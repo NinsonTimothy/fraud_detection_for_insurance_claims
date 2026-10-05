@@ -19,13 +19,13 @@ _LAYOUT = dict(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font
 
 
 def risk_gauge(probability: float, threshold: float, medium_edge: float, high_edge: float) -> go.Figure:
-    """Fraud probability as a 0-100 gauge, banded Low/Medium/High, with the
+    """Fraud-risk score as a 0-100 gauge, banded Low/Medium/High, with the
     review threshold drawn as a marker line."""
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=round(probability * 100, 1),
         number={"suffix": "%", "font": {"size": 40}},
-        title={"text": "Fraud probability", "font": {"size": 14, "color": MUTED}},
+        title={"text": "Fraud-risk score", "font": {"size": 14, "color": MUTED}},
         gauge={
             "axis": {"range": [0, 100], "ticksuffix": "%"},
             "bar": {"color": TEXT, "thickness": 0.25},
@@ -71,7 +71,7 @@ def score_context_histogram(reference_scores: np.ndarray, this_score: float, thr
     fig.add_vline(x=this_score, line_color=DANGER, line_width=3,
                   annotation_text="this claim", annotation_position="top right")
     fig.update_layout(title="This claim vs. 200 held-out test claims", height=260,
-                      xaxis_title="Fraud probability", yaxis_title="Claims", xaxis_range=[0, 1],
+                      xaxis_title="Fraud-risk score", yaxis_title="Claims", xaxis_range=[0, 1],
                       showlegend=False, **_LAYOUT)
     return fig
 
@@ -103,8 +103,8 @@ def probability_histogram(df: pd.DataFrame, threshold: float) -> go.Figure:
             fig.add_trace(go.Histogram(x=sub["fraud_probability"], name=g, marker_color=GRADE_COLOURS[g],
                                        xbins=dict(start=0, end=1, size=0.04)))
     fig.add_vline(x=threshold, line_dash="dash", line_color=ACCENT, annotation_text=f"review threshold {threshold:.2f}")
-    fig.update_layout(title="Fraud probability distribution", barmode="stack", height=300,
-                      xaxis_title="Fraud probability", yaxis_title="Claims", xaxis_range=[0, 1], **_LAYOUT)
+    fig.update_layout(title="Fraud-risk score distribution", barmode="stack", height=300,
+                      xaxis_title="Fraud-risk score", yaxis_title="Claims", xaxis_range=[0, 1], **_LAYOUT)
     return fig
 
 
@@ -132,8 +132,8 @@ def amount_vs_probability(df: pd.DataFrame, threshold: float) -> go.Figure:
                 hovertemplate="claim %{customdata}<br>$%{x:,.0f}<br>p=%{y:.2f}<extra>" + g + "</extra>",
             ))
     fig.add_hline(y=threshold, line_dash="dash", line_color=ACCENT)
-    fig.update_layout(title="Claim amount vs. fraud probability", height=320, xaxis_title="Total claim amount ($)",
-                      yaxis_title="Fraud probability", yaxis_range=[0, 1], **_LAYOUT)
+    fig.update_layout(title="Claim amount vs. fraud-risk score", height=320, xaxis_title="Total claim amount ($)",
+                      yaxis_title="Fraud-risk score", yaxis_range=[0, 1], **_LAYOUT)
     return fig
 
 
@@ -153,4 +153,47 @@ def driver_frequency_bar(reasons_per_claim: list[list[dict]], top_n: int = 10) -
                            text=s.values, textposition="auto"))
     fig.update_layout(title="Most common risk-raising factors (top-3 per flagged claim)",
                       height=max(260, 32 * len(s)), xaxis_title="Flagged claims", yaxis_title="", **_LAYOUT)
+    return fig
+
+
+def field_driver_bar(field_shap: pd.DataFrame, labels: dict, top_n: int = 12) -> go.Figure:
+    """A1: mean |SHAP| per PARENT raw field across the claims in view."""
+    s = field_shap.abs().mean().sort_values().tail(top_n)
+    fig = go.Figure(go.Bar(x=s.values, y=[labels.get(i, i) for i in s.index], orientation="h", marker_color=ACCENT,
+                           text=[f"{v:.3f}" for v in s.values], textposition="auto"))
+    fig.update_layout(title="Top drivers in this view (mean |SHAP| per claim field)", height=max(280, 30 * len(s)),
+                      xaxis_title="Mean |SHAP contribution|", yaxis_title="", **_LAYOUT)
+    return fig
+
+
+def score_by_category(df: pd.DataFrame, column: str, title: str) -> go.Figure:
+    g = df.groupby(column).agg(mean=("fraud_probability", "mean"), n=("fraud_probability", "size")).reset_index().sort_values("mean")
+    fig = go.Figure(go.Bar(x=g["mean"], y=g[column].astype(str), orientation="h", marker_color=WARNING,
+                           text=[f"{m:.2f} (n={n})" for m, n in zip(g["mean"], g["n"])], textposition="auto"))
+    fig.update_layout(title=title, height=max(240, 40 * len(g)), xaxis_title="Mean fraud-risk score", yaxis_title="",
+                      xaxis_range=[0, 1], **_LAYOUT)
+    return fig
+
+
+def reliability_chart(rel: pd.DataFrame, split: str, champion: str) -> go.Figure:
+    fig = go.Figure(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", line=dict(dash="dash", color=MUTED), name="perfect"))
+    for model, g in rel[(rel["split"] == split) & (rel["n"] > 0)].groupby("model"):
+        fig.add_trace(go.Scatter(x=g["mean_predicted"], y=g["observed_fraud_rate"], mode="lines+markers",
+                                 name=f"{model}{' (champion)' if model == champion else ''}",
+                                 line=dict(width=4 if model == champion else 1.5),
+                                 customdata=g["n"], hovertemplate="predicted %{x:.2f}<br>observed %{y:.2f}<br>n=%{customdata}"))
+    fig.update_layout(title=f"Reliability ({split.replace('_', ' ')})", height=340, xaxis_title="Mean predicted score",
+                      yaxis_title="Observed fraud rate", xaxis_range=[0, 1], yaxis_range=[0, 1], **_LAYOUT)
+    return fig
+
+
+def internal_vs_external(rows: list[dict]) -> go.Figure:
+    """rows: {label, roc_auc, lo, hi} — point estimates with 95% CIs."""
+    fig = go.Figure(go.Bar(x=[r["label"] for r in rows], y=[r["roc_auc"] for r in rows], marker_color=[ACCENT, DANGER][:len(rows)],
+                           error_y=dict(type="data", symmetric=False, array=[r["hi"] - r["roc_auc"] for r in rows],
+                                        arrayminus=[r["roc_auc"] - r["lo"] for r in rows]),
+                           text=[f"{r['roc_auc']:.3f}" for r in rows], textposition="outside"))
+    fig.add_hline(y=0.5, line_dash="dash", line_color=MUTED, annotation_text="random ranking (0.5)")
+    fig.update_layout(title="ROC-AUC with 95% bootstrap CI: internal test vs Oracle", height=340,
+                      yaxis_range=[0.3, 1.0], yaxis_title="ROC-AUC", **_LAYOUT)
     return fig

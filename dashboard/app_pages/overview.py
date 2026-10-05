@@ -51,7 +51,7 @@ def _ci_caption(metric: str, base: str) -> str:
     return f"{base} · 95% CI [{ci[0]:.3f}, {ci[1]:.3f}]"
 
 
-st.caption(f"Shipped model: **{CHAMPION}** (selected on the training split only — see Model insights → Model selection).")
+st.caption(f"Shipped model: **{CHAMPION}** (computed by the pre-declared selection rule on the development rows only — see Model insights).")
 c1, c2, c3, c4 = st.columns(4)
 with c1:
     kpi_card("Internal test ROC-AUC", f"{rf_row['roc_auc']:.3f}", _ci_caption("roc_auc", f"n_test={metrics['n_test']}"))
@@ -64,7 +64,7 @@ with c4:
 
 if cv_row is not None:
     st.caption(
-        f"Nested CV on the TRAINING split only (15 paired folds, refit per fold, a different source of uncertainty — how much this moves across "
+        f"Repeated CV on the 800 DEVELOPMENT rows only (refit per fold, a different source of uncertainty — how much this moves across "
         f"different TRAINING splits, not just different samples of this one test set): "
         f"F1 {cv_row['f1_mean']:.3f}±{cv_row['f1_std']:.3f} · "
         f"ROC-AUC {cv_row['roc_auc_mean']:.3f}±{cv_row['roc_auc_std']:.3f} · "
@@ -74,21 +74,16 @@ if cv_row is not None:
 decision = load_champion_decision()
 ba = metrics.get("baseline_agreement")
 if decision and ba:
-    vs = decision.get("champion_vs_baseline", {}).get("f1") or {}
+    from app.ml.reporting import champion_vs_rule_sentence
+    vr = decision["champion_vs_rule"]
     st.markdown(
         f"""<div class="aeg-note" style="border-color:{WARNING}55;background:{WARNING}14;">
-        <b>Baseline check — a key finding, shown on purpose.</b> A one-line rule
-        (<i>flag if incident severity = "Major Damage"</i>) scores F1 {decision['baseline_cv']['f1_mean']:.3f} in
-        nested CV vs. {decision['champion_cv']['f1_mean']:.3f} for {CHAMPION}
-        (difference {vs.get('mean_difference', 0):+.3f}, corrected p = {vs.get('p_corrected', float('nan')):.2f}).
-        {'No ML model beat this rule.' if not decision.get('beats_or_matches_baseline_on_f1') else 'The champion matches or beats it.'}
-        On the test set the shipped model's review/no-review decision is identical to the rule for
-        <b>{ba['test_decision_agreement']:.0%}</b> of {ba['n_test']} claims. What the model adds is a
-        <b>ranking</b> within each group (PR-AUC {decision['champion_cv']['pr_auc_mean']:.3f} vs.
-        {decision['baseline_cv']['pr_auc_mean']:.3f}) and a per-claim <b>explanation</b>, not a better
-        flag decision.</div>""",
-        unsafe_allow_html=True,
-    )
+        <b>Rule-baseline check (shown on purpose).</b> {champion_vs_rule_sentence(decision)}
+        Development CV, champion minus rule: PR-AUC {vr['pr_auc']['mean_difference']:+.3f} (p = {vr['pr_auc']['p_corrected']:.3f}),
+        F1 {vr['f1']['mean_difference']:+.3f} (p = {vr['f1']['p_corrected']:.3f}). On the test set the champion's review
+        decision matches the rule <i>flag if incident severity = Major Damage</i> for <b>{ba['test_decision_agreement']:.0%}</b>
+        of {ba['n_test']} claims. The model's contribution is ranking and per-claim explanation.</div>""",
+        unsafe_allow_html=True)
 
 st.write("")
 if oracle_results_available():

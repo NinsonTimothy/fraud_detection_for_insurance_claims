@@ -145,7 +145,7 @@ def load_selection_summary() -> pd.DataFrame:
 
 @st.cache_data
 def load_pairwise_tests() -> pd.DataFrame:
-    path = PROCESSED_DIR / "champion_pairwise_tests.csv"
+    path = PROCESSED_DIR / "pairwise_tests.csv"
     return pd.read_csv(path) if path.exists() else pd.DataFrame()
 
 

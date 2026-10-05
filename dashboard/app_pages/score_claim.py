@@ -59,7 +59,8 @@ D = MISSING_COLUMN_DEFAULTS
 # form can never offer a value the model has not seen (or miss one it has).
 _known: dict[str, list[str]] = {}
 for _col, (_src, _cat) in build_source_map(service.feature_columns).items():
-    _known.setdefault(_src, []).append(_cat)
+    if _cat is not None:  # derived single-parent features carry no category
+        _known.setdefault(_src, []).append(_cat)
 _known = {k: sorted(v) for k, v in _known.items()}
 
 
@@ -146,7 +147,7 @@ with tab_incident:
         property_damage = _cat("Property damage?", "property_damage")
         police_report_available = _cat("Police report available?", "police_report_available")
     with c5:
-        incident_date = st.date_input("Incident date", value=date.today(), min_value=policy_bind_date,
+        incident_date = st.date_input("Incident date", value=date.today(), min_value=date(1990, 1, 1),
                                       max_value=date.today(), key="incident_date")
 
 with tab_amounts:
@@ -161,22 +162,43 @@ with tab_amounts:
     auto_year = st.number_input("Vehicle model year", 1990, 2026, 2005, key="f_year")
 
 # ---- Coverage check: what share of the model's weight this form supplies ----
-FORM_FIELDS = {
-    "months_as_customer", "policy_state", "policy_csl", "policy_deductable", "policy_annual_premium",
-    "umbrella_limit", "policy_bind_date", "age", "insured_sex", "insured_education_level",
-    "insured_relationship", "capital-gains", "capital-loss", "incident_severity", "incident_type",
-    "collision_type", "incident_state", "authorities_contacted", "incident_hour_of_the_day",
-    "number_of_vehicles_involved", "bodily_injuries", "witnesses", "property_damage",
-    "police_report_available", "incident_date", "injury_claim", "property_claim", "vehicle_claim", "auto_year",
-} | ({"insured_hobbies", "insured_occupation"} if INCLUDE_PROXY_FEATURES else set())
+from app.ml.form_spec import FORM_FIELDS  # single source of truth, checked by backend tests
 field_imp = load_field_importance()
 if not field_imp.empty:
     covered = field_imp["source_field"].map(lambda f: ENGINEERED_INPUTS.get(f, {f}) <= FORM_FIELDS)
     st.caption(f"This form supplies inputs for **{field_imp.loc[covered, 'share_of_total'].sum():.0%}** of the "
                f"model's SHAP weight (computed from `shap_importance_by_field.csv`, not typed).")
 
+# ---- A5: validation (clear messages; scoring disabled until fixed) ----
+errors = []
+if incident_date < policy_bind_date:
+    errors.append(f"Incident date ({incident_date}) is before the policy bind date ({policy_bind_date}).")
+if auto_year > incident_date.year + 1:
+    errors.append(f"Vehicle model year ({auto_year}) is after the incident year ({incident_date.year}).")
+if min(injury_claim, property_claim, vehicle_claim) < 0 or policy_annual_premium <= 0:
+    errors.append("Claim amounts cannot be negative and the annual premium must be positive.")
+if not 16 <= age <= 100:
+    errors.append("Insured age must be between 16 and 100.")
+if months_as_customer / 12 > age:
+    errors.append("Months as customer implies a relationship longer than the insured's age.")
+for e in errors:
+    st.error(e)
+
+# ---- A5: derived values, read-only, recomputed live ----
+_policy_age = (incident_date - policy_bind_date).days
+st.markdown("##### Derived values (read-only)")
+dv = st.columns(6)
+dv[0].metric("Claim / premium", f"{total_claim_amount / policy_annual_premium:.1f}x" if policy_annual_premium else "—")
+dv[1].metric("Injury share", f"{injury_claim / total_claim_amount:.0%}" if total_claim_amount else "—")
+dv[2].metric("Property share", f"{property_claim / total_claim_amount:.0%}" if total_claim_amount else "—")
+dv[3].metric("Vehicle share", f"{vehicle_claim / total_claim_amount:.0%}" if total_claim_amount else "—")
+dv[4].metric("Policy age at incident", f"{_policy_age:,} days")
+dv[5].metric("Vehicle age", f"{incident_date.year - auto_year} yrs")
+st.caption(f"Incident day: {incident_date:%A} ({'weekend' if incident_date.weekday() >= 5 else 'weekday'}) — "
+           "informational only, not a model feature.")
+
 st.write("")
-if st.button("Score claim", type="primary", width="stretch"):
+if st.button("Score claim", type="primary", width="stretch", disabled=bool(errors)):
     payload = {
         "months_as_customer": int(months_as_customer), "age": int(age), "policy_state": policy_state,
         "policy_csl": policy_csl, "policy_deductable": int(policy_deductable),
@@ -220,20 +242,16 @@ if "last_score" in st.session_state:
     with c1:
         st.plotly_chart(risk_gauge(p, thr, MEDIUM_RISK_EDGE, HIGH_RISK_EDGE), width="stretch")
     with c2:
-        st.markdown(f"### {risk_badge(grade)} &nbsp; {p:.1%} fraud probability", unsafe_allow_html=True)
-        above = p >= thr
+        st.markdown(f"### {risk_badge(grade)} &nbsp; Fraud-risk score {p:.2f}", unsafe_allow_html=True)
         st.markdown(
             f"<div class='aeg-card' style='border-color:{colour}88'>"
-            f"<b>{'Above' if above else 'Below'} the review threshold</b> ({thr:.0%}). "
-            f"<br/><b>Suggested next step:</b> {res['recommended_action']}."
+            f"<b>{grade} band</b> · <b>{'Flagged for review' if p >= thr else 'Not flagged'}</b> (review threshold {thr:.2f})"
+            f"<br/><b>Recommended next step:</b> {res['recommended_action']}"
             f"<br/><span style='color:{MUTED}'>Saved as claim #{st.session_state['last_score']['claim_id']} · "
             f"model {res['model_version']}</span></div>", unsafe_allow_html=True)
-        ups = [r for r in res["top_reasons"] if r["shap_value"] > 0][:3]
-        downs = [r for r in res["top_reasons"] if r["shap_value"] < 0][:3]
-        if ups:
-            st.markdown("**Pushing the score up:** " + "; ".join(f"{r['display_name']} = {r['display_value']}" for r in ups))
-        if downs:
-            st.markdown("**Pulling the score down:** " + "; ".join(f"{r['display_name']} = {r['display_value']}" for r in downs))
+    f1c, f2c = st.columns(2)
+    f1c.markdown("**Factors increasing risk**\n" + ("\n".join(f"- {r['sentence']}" for r in res["factors_increasing_risk"]) or "- none"))
+    f2c.markdown("**Factors reducing risk**\n" + ("\n".join(f"- {r['sentence']}" for r in res["factors_reducing_risk"]) or "- none"))
 
     st.plotly_chart(reasons_bar(res["top_reasons"]), width="stretch")
     st.caption("Each bar is one claim field (categorical answers are grouped, so a field appears once, with the "

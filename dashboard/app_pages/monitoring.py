@@ -96,3 +96,44 @@ with tab3:
     st.caption("Every other raw field falls back to its documented default (feature_engineering.MISSING_COLUMN_DEFAULTS) — nothing invented to move the score either way, same honest-mapping rule as the sibling MoMo Guard project's PaySim adapter.")
     st.write("")
     st.caption(f"Model: {report.get('model', 'random_forest')} · Generated {report['generated_at'][:19].replace('T',' ')} UTC · Regenerate with `python -m app.ml.evaluate_oracle`.")
+
+
+# ---------------------------------------------------------------- C1 / B8 ---
+import json as _json
+import pandas as pd
+
+from components.charts import internal_vs_external, reliability_chart
+from components.data_access import PROCESSED_DIR as _P, load_metrics
+
+st.divider()
+st.markdown("### Calibration (champion and comparators)")
+_rel_path = _P / "reliability_curves.csv"
+if _rel_path.exists():
+    _rel = pd.read_csv(_rel_path)
+    _champ = load_metrics().get("primary_model")
+    r1, r2 = st.columns(2)
+    r1.plotly_chart(reliability_chart(_rel, "development_oof", _champ), width="stretch")
+    r2.plotly_chart(reliability_chart(_rel, "test", _champ), width="stretch")
+    st.dataframe(pd.read_csv(_P / "calibration_summary.csv").round(3), width="stretch", hide_index=True)
+    st.caption("Brier: lower is better (the base-rate row is what always predicting the fraud rate scores). "
+               "ECE: mean gap between predicted and observed fraud rate across 10 bins.")
+
+st.markdown("### Internal vs external validation")
+_ci = pd.read_csv(_P / "holdout_bootstrap_ci.csv")
+_champ = load_metrics().get("primary_model")
+_row = _ci[(_ci["model"] == _champ) & (_ci["metric"] == "roc_auc")]
+_oc = report.get("oracle_metrics_ci", {}).get("roc_auc")
+if len(_row) and _oc:
+    st.plotly_chart(internal_vs_external([
+        {"label": "Internal test (200)", "roc_auc": float(_row["point_estimate"].iloc[0]), "lo": float(_row["ci_lower"].iloc[0]), "hi": float(_row["ci_upper"].iloc[0])},
+        {"label": f"Oracle ({report['oracle_n_rows']:,})", "roc_auc": report["oracle_metrics"]["roc_auc"], "lo": _oc["ci_lower"], "hi": _oc["ci_upper"]},
+    ]), width="stretch")
+_ext = _P.parent / "external" / "oracle"
+if (_ext / "oracle_field_mapping.csv").exists():
+    st.markdown("**Field mapping (raw field → Oracle source)**")
+    st.dataframe(pd.read_csv(_ext / "oracle_field_mapping.csv"), width="stretch", hide_index=True)
+if (_ext / "oracle_univariate_auc.csv").exists():
+    st.markdown("**Univariate AUC of the features that still vary on Oracle (development vs Oracle)**")
+    st.dataframe(pd.read_csv(_ext / "oracle_univariate_auc.csv").round(3), width="stretch", hide_index=True)
+    st.caption("AUCs near 0.5 on the development data mean these features carried almost no signal to transfer in "
+               "the first place; a reversal flag means the relationship flips between datasets.")

@@ -6,6 +6,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pandas as pd
 import plotly.express as px
 import streamlit as st
 
@@ -17,7 +18,7 @@ if _dashboard_root not in sys.path:
     # the backend's app/ package (see components/data_access.py,
     # which puts backend/ at sys.path[0] once, on first import).
     sys.path.append(_dashboard_root)
-from components.data_access import load_champion_decision, load_cross_validation, load_field_importance, load_metrics, load_pairwise_tests, load_selection_summary, load_shap_importance, models_are_available
+from components.data_access import PROCESSED_DIR, load_champion_decision, load_cross_validation, load_field_importance, load_metrics, load_pairwise_tests, load_selection_summary, load_shap_importance, models_are_available
 from components.theme import ACCENT, DANGER, MUTED, WARNING, inject_css, page_header
 
 inject_css()
@@ -36,47 +37,48 @@ with tab0:
     decision = load_champion_decision()
     summary = load_selection_summary()
     tests = load_pairwise_tests()
-    metrics = load_metrics()
     if not decision or summary.empty:
-        st.info("Run `python -m app.ml.train` to produce the model-selection artefacts.")
+        st.info("Run `python -m app.ml.run_all` to produce the model-selection artefacts.")
     else:
-        proto = decision["protocol"]
-        st.markdown(
-            f"""**How the champion was chosen (MS-01).** {proto['data'].capitalize()}. Outer loop: {proto['outer_cv']}.
-Inner loop: {proto['inner_cv']}. Rule, fixed in code before results were seen: {proto['selection_rule']}.
-Test: {proto['significance_test']}."""
-        )
-        show = summary.sort_values("f1_mean", ascending=False)
-        fig = px.bar(show, x="model", y="f1_mean", error_y="f1_std", color="model",
-                     color_discrete_map={"major_damage_rule": WARNING}, labels={"f1_mean": "F1 (nested CV, mean ± SD)", "model": ""})
-        fig.update_layout(showlegend=False, height=340, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e6e8ef")
+        from app.ml.reporting import champion_vs_rule_sentence
+        st.markdown("**Protocol (pre-declared, applied mechanically):**\n" + "\n".join(
+            f"- *{k.replace('_', ' ')}:* {v}" for k, v in decision["protocol"].items()))
+        st.markdown(f"**Champion (computed): `{decision['champion']}`** · best PR-AUC model: `{decision['best_pr_auc_model']}`")
+        for t in decision["decision_trail"]:
+            st.markdown(f"- `{t['candidate']}` — {t['decision']}" + (f" (p = {t['vs_best_p']:.3f})" if "vs_best_p" in t else ""))
+        st.markdown(f"<div class='aeg-note' style='border-color:{WARNING}55;background:{WARNING}14;'>"
+                    f"{champion_vs_rule_sentence(decision)}</div>", unsafe_allow_html=True)
+        show = summary.sort_values("pr_auc_mean", ascending=False)
+        fig = px.bar(show, x="model", y="pr_auc_mean", error_y="pr_auc_std", color="model",
+                     color_discrete_map={"major_damage_rule": WARNING}, labels={"pr_auc_mean": "PR-AUC (dev CV, mean ± SD)", "model": ""})
+        fig.update_layout(showlegend=False, height=320, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e6e8ef")
         st.plotly_chart(fig, width="stretch")
         st.dataframe(show.round(3), width="stretch", hide_index=True)
-        ba = metrics.get("baseline_agreement", {})
-        st.markdown(
-            f"""<div class="aeg-note" style="border-color:{WARNING}55;background:{WARNING}14;">
-            <b>Measured champion: {decision['measured_champion']}.</b>
-            {'It did NOT beat the one-line Major-Damage rule on F1, so the pre-declared rule fell back to the best ML candidate.' if not decision['beats_or_matches_baseline_on_f1'] else 'It matches or beats the Major-Damage rule on F1.'}
-            On the 200 test claims its review/no-review decision is identical to the rule's for
-            {ba.get('test_decision_agreement', float('nan')):.0%} of claims. The model is kept because it RANKS
-            claims (the rule gives every Major-Damage claim the same score, so it cannot say which to open first)
-            and EXPLAINS each score — not because it flags better.</div>""",
-            unsafe_allow_html=True,
-        )
         if not tests.empty:
-            st.write("")
-            st.markdown("**Paired significance tests (champion minus other; every p-value computed by code):**")
-            st.dataframe(tests.drop(columns=["champion"]).round(4), width="stretch", hide_index=True)
-
+            st.markdown("**Pairwise corrected resampled t-tests (every p-value computed):**")
+            st.dataframe(tests.round(4), width="stretch", hide_index=True)
+    probe_path = PROCESSED_DIR / "sensitivity_probe.csv"
+    if probe_path.exists():
+        st.markdown("#### Sensitivity probe — one field changed at a time on a reference claim")
+        probe = pd.read_csv(probe_path)
+        for field, g in probe.groupby("field", sort=False):
+            st.markdown(f"**{field}**")
+            st.dataframe(g[["value", "fraud_risk_score", "risk_band", "flagged_for_review"]].round(3), width="stretch", hide_index=True)
+        st.caption("Note the severity row: Total Loss scores well below Major Damage, close to Minor Damage, because in "
+                   "this dataset Total Loss claims are rarely fraud. Disclosed in docs/LIMITATIONS.md.")
 
 with tab1:
-    top20 = shap_df.head(20).sort_values("mean_abs_shap")
-    risky = {"is_highrisk_hobby", "is_exec_occupation"}  # proxy features
-    top20["flag"] = top20["feature"].isin(risky)
-    fig = px.bar(top20, x="mean_abs_shap", y="feature", orientation="h", color="flag",
-                 color_discrete_map={True: DANGER, False: ACCENT}, labels={"mean_abs_shap": "mean |SHAP|", "feature": ""})
-    fig.update_layout(showlegend=False, height=560, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e6e8ef")
+    # A7: same parent-field aggregation as the per-claim explanations.
+    fimp = load_field_importance()
+    top20 = fimp.head(20).sort_values("mean_abs_shap")
+    top20["flag"] = top20["source_field"].isin({"insured_hobbies", "insured_occupation"})
+    fig = px.bar(top20, x="share_of_total", y="display_name", orientation="h", color="flag",
+                 color_discrete_map={True: DANGER, False: ACCENT}, labels={"share_of_total": "share of global mean |SHAP|", "display_name": ""})
+    fig.update_layout(showlegend=False, height=560, xaxis_tickformat=".0%", paper_bgcolor="rgba(0,0,0,0)",
+                      plot_bgcolor="rgba(0,0,0,0)", font_color="#e6e8ef")
     st.plotly_chart(fig, width="stretch")
+    st.caption("One bar per claim FIELD: one-hot columns and single-parent engineered features (e.g. is_major_damage "
+               "and the severity ordinal -> Incident severity) are summed, exactly as in each claim's explanation.")
     st.caption("Red bars = features flagged in the audit tab as not safe to treat as genuine fraud signal.")
 
     st.markdown(

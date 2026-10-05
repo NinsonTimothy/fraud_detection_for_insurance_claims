@@ -1,28 +1,18 @@
-"""app_pages/batch_review.py — batch review DASHBOARD (supervisor's top
-priority for the defence).
+"""app_pages/batch_review.py — Batch review dashboard (supervisor priority).
 
-BR-01 (pre-defence rebuild):
-* KPI cards: claims scored, flagged for review, high-risk count, value of
-  flagged claims, mean fraud probability.
-* Charts: risk-grade distribution, probability histogram with the review
-  threshold, flag rate by incident severity / incident state, claim amount
-  vs. probability, and the factors most often driving flags across the queue.
-* Filters (sidebar): risk grade, probability range, flagged-only, incident
-  severity, incident state, claim amount range — every KPI, chart and table
-  on the page respects them.
-* A top-20 most-suspicious-claims table with each claim's top reasons, and a
-  per-claim drill-down chart.
-* Downloads: full scored batch, current filtered view, top-20, escalations.
-* A built-in sample batch so the page can be demonstrated without a file.
-
-BR-02 (bug fix): the old page re-scored AND re-persisted the uploaded file
-on EVERY Streamlit rerun — i.e. every time any widget changed. With filters
-on the page that would have written duplicate claims to the database on each
-click. Scoring + persistence now happen once per distinct file (keyed by a
-content hash); filters only re-slice the cached result.
-
-DS-01: decision-support wording throughout — the queue is a list of
-RECOMMENDATIONS for human review.
+A1  KPI cards (total, flagged, High/Medium/Low counts, mean fraud-risk score);
+    charts: risk bands, score histogram, risk by incident severity,
+    aggregated SHAP drivers (mean |SHAP| per PARENT raw field), claim amount
+    vs score; then an auto "Top 20 suspicious claims" table. The full table
+    is secondary (expander).
+A2  Sidebar filters (band, flagged, score range, severity, claim amount)
+    drive BOTH the charts and the tables. No click-on-chart filtering.
+A3  Drill-down on the same page: select a row in the top-20 table (or pick
+    it from the list below it) to open its full explanation.
+A4  Downloads: filtered queue and escalated list (CSV), plus rejected rows.
+A6  Rows whose total != injury + property + vehicle (tolerance 1.0) are
+    REJECTED with a per-row reason, never silently corrected or scored.
+BR-02 (kept) scoring + persistence happen once per distinct file.
 """
 from __future__ import annotations
 
@@ -34,207 +24,193 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-_dashboard_root = str(Path(__file__).resolve().parents[1])
-if _dashboard_root not in sys.path:
-    sys.path.append(_dashboard_root)
-from components.charts import (
-    amount_vs_probability, driver_frequency_bar, flag_rate_by, grade_distribution_bar,
-    probability_histogram, reasons_bar,
-)
+_root = str(Path(__file__).resolve().parents[1])
+if _root not in sys.path:
+    sys.path.append(_root)
+from components.charts import (amount_vs_probability, field_driver_bar, grade_distribution_bar,
+                               probability_histogram, reasons_bar, score_by_category)
 from components.data_access import SAMPLES_DIR, get_scoring_service, models_are_available, new_db_session
 from components.theme import inject_css, kpi_card, page_header
 
+from app.ml.explainer import FEATURE_LABELS, FEATURE_LABELS_EXTRA, split_reasons
+from app.ml.feature_engineering import TOTAL_TOLERANCE, inconsistent_total_mask
 from app.ml.risk_policy import DECISION_SUPPORT_NOTICE
 
 inject_css()
-page_header("Batch review dashboard", "Score a batch of claims, see where the risk is, and work the most suspicious first.")
+page_header("Batch review dashboard", "Score a batch of claims, see where the risk is, and open the most suspicious first.")
 st.markdown(f"<div class='aeg-note'>🧑‍⚖️ {DECISION_SUPPORT_NOTICE}</div>", unsafe_allow_html=True)
 st.write("")
-
 if not models_are_available():
-    st.warning("No trained model found. Run `python -m app.ml.train` from `backend/` first.")
+    st.warning("No trained model found. Run `python -m app.ml.run_all` from `backend/` first.")
     st.stop()
 
 SAMPLE_FILE = SAMPLES_DIR / "sample_batch_claims.csv"
+LABELS = {**FEATURE_LABELS, **FEATURE_LABELS_EXTRA}
 
-# ---------------------------------------------------------------- input ---
 c_up, c_sample = st.columns([3, 1])
-with c_up:
-    uploaded = st.file_uploader("Upload claims CSV (any subset of the raw claim fields)", type=["csv"])
+uploaded = c_up.file_uploader("Upload claims CSV (any subset of the raw claim fields)", type=["csv"])
 with c_sample:
-    st.write("")
-    st.write("")
-    use_sample = st.button("Load sample batch", width="stretch", disabled=not SAMPLE_FILE.exists(),
-                           help="60 demo claims from data/samples/sample_batch_claims.csv")
+    st.write(""); st.write("")
+    use_sample = st.button("Load sample batch", width="stretch", disabled=not SAMPLE_FILE.exists())
 
-raw_bytes, source_name = None, None
-if uploaded is not None:
-    raw_bytes, source_name = uploaded.getvalue(), uploaded.name
-elif use_sample:
-    raw_bytes, source_name = SAMPLE_FILE.read_bytes(), SAMPLE_FILE.name
+raw_bytes, source = (uploaded.getvalue(), uploaded.name) if uploaded is not None else \
+    ((SAMPLE_FILE.read_bytes(), SAMPLE_FILE.name) if use_sample else (None, None))
 
 if raw_bytes is not None:
     digest = hashlib.sha256(raw_bytes).hexdigest()
-    if st.session_state.get("batch_digest") != digest:  # BR-02: once per distinct file
+    if st.session_state.get("batch_digest") != digest:
         df = pd.read_csv(io.BytesIO(raw_bytes), keep_default_na=False, na_values=[""])
+        bad = inconsistent_total_mask(df)
+        rejected = df[bad].copy()
+        if len(rejected):
+            parts = rejected[["injury_claim", "property_claim", "vehicle_claim"]].apply(pd.to_numeric, errors="coerce").sum(axis=1)
+            rejected.insert(0, "rejection_reason", [f"total_claim_amount {t:,.2f} != sum of parts {s:,.2f} (tolerance {TOTAL_TOLERANCE})"
+                                                     for t, s in zip(pd.to_numeric(rejected["total_claim_amount"]), parts)])
+            rejected.insert(0, "row_number", rejected.index + 1)
+        df = df[~bad].reset_index(drop=True)
         service = get_scoring_service()
         with st.spinner(f"Scoring {len(df):,} claims and computing explanations..."):
-            scored = service.score_batch(df)
-        from app.db.persistence import persist_scored_claims_batch
-        scored_rows = [{**row, "model_version": service.model_version} for row in scored.to_dict(orient="records")]
-        db = new_db_session()
-        try:
-            claim_ids = persist_scored_claims_batch(db, df.to_dict(orient="records"), scored_rows, ingested_via="dashboard_batch")
-            db.commit()
-        finally:
-            db.close()
-        result = pd.concat([df.reset_index(drop=True), scored.reset_index(drop=True)], axis=1)
+            scored, field_shap = service.score_batch(df, with_field_shap=True) if len(df) else (pd.DataFrame(), pd.DataFrame())
+        claim_ids = []
+        if len(df):
+            from app.db.persistence import persist_scored_claims_batch
+            rows = [{**r, "model_version": service.model_version} for r in scored.to_dict(orient="records")]
+            db = new_db_session()
+            try:
+                claim_ids = persist_scored_claims_batch(db, df.to_dict(orient="records"), rows, ingested_via="dashboard_batch")
+                db.commit()
+            finally:
+                db.close()
+        result = pd.concat([df, scored.reset_index(drop=True)], axis=1)
         result.insert(0, "claim_id", claim_ids)
-        if "total_claim_amount" not in result or result["total_claim_amount"].isna().any():
-            parts = result.reindex(columns=["injury_claim", "property_claim", "vehicle_claim"]).apply(pd.to_numeric, errors="coerce")
-            derived = parts.sum(axis=1, min_count=3)
-            result["total_claim_amount"] = pd.to_numeric(result.get("total_claim_amount"), errors="coerce").fillna(derived)
-        result["total_claim_amount"] = pd.to_numeric(result["total_claim_amount"], errors="coerce").fillna(0.0)
+        if "total_claim_amount" not in result:
+            result["total_claim_amount"] = result.reindex(columns=["injury_claim", "property_claim", "vehicle_claim"]).sum(axis=1)
+        result["total_claim_amount"] = pd.to_numeric(result["total_claim_amount"], errors="coerce").fillna(
+            result.reindex(columns=["injury_claim", "property_claim", "vehicle_claim"]).apply(pd.to_numeric, errors="coerce").sum(axis=1))
         result["top_3_reasons"] = result["top_reasons"].map(
             lambda rs: " | ".join(f"{r['display_name']}: {r['display_value']} ({'▲' if r['shap_value'] > 0 else '▼'})" for r in (rs or [])[:3]))
-        st.session_state.update(batch_digest=digest, batch_result=result, batch_source=source_name,
-                                session_scored_count=st.session_state.get("session_scored_count", 0) + len(df),
-                                escalated_rows=[])
-        st.toast(f"Scored and saved {len(claim_ids):,} claims from {source_name}")
+        field_shap.index = result.index
+        st.session_state.update(batch_digest=digest, batch_result=result, batch_field_shap=field_shap,
+                                batch_rejected=rejected, batch_source=source, escalated_rows=[])
 
 if "batch_result" not in st.session_state:
     st.info("Upload a CSV, or click **Load sample batch**, to populate the dashboard.")
     st.stop()
 
 result: pd.DataFrame = st.session_state["batch_result"]
+rejected: pd.DataFrame = st.session_state["batch_rejected"]
+if len(rejected):
+    st.error(f"{len(rejected)} row(s) rejected: total_claim_amount does not equal injury + property + vehicle. "
+             "They were not scored. See the rejected-rows report below.")
+if result.empty:
+    st.stop()
 threshold = float(result["operating_threshold"].iloc[0])
 
-# -------------------------------------------------------------- filters ---
+# ------------------------------------------------------------- filters (A2)
 with st.sidebar:
     st.markdown("#### Batch filters")
-    grades = st.multiselect("Risk grade", ["High", "Medium", "Low"], default=["High", "Medium", "Low"])
-    p_lo, p_hi = st.slider("Fraud probability", 0.0, 1.0, (0.0, 1.0), 0.01)
+    bands = st.multiselect("Risk band", ["High", "Medium", "Low"], default=["High", "Medium", "Low"])
     flagged_only = st.checkbox("Flagged for review only")
+    s_lo, s_hi = st.slider("Fraud-risk score", 0.0, 1.0, (0.0, 1.0), 0.01)
     sev_opts = sorted(result["incident_severity"].dropna().astype(str).unique()) if "incident_severity" in result else []
-    severities = st.multiselect("Incident severity", sev_opts, default=sev_opts)
-    state_opts = sorted(result["incident_state"].dropna().astype(str).unique()) if "incident_state" in result else []
-    states = st.multiselect("Incident state", state_opts, default=state_opts)
-    amt_max = float(max(1.0, result["total_claim_amount"].max()))
-    a_lo, a_hi = st.slider("Total claim amount ($)", 0.0, amt_max, (0.0, amt_max), step=float(max(1.0, round(amt_max / 100))))
+    sev = st.multiselect("Incident severity", sev_opts, default=sev_opts)
+    amax = float(max(1.0, result["total_claim_amount"].max()))
+    a_lo, a_hi = st.slider("Total claim amount ($)", 0.0, amax, (0.0, amax), step=float(max(1.0, round(amax / 100))))
     if st.button("Clear batch"):
-        for k in ("batch_digest", "batch_result", "batch_source", "escalated_rows"):
+        for k in [k for k in st.session_state if k.startswith("batch_")] + ["escalated_rows"]:
             st.session_state.pop(k, None)
         st.rerun()
 
-mask = (result["risk_grade"].isin(grades) & result["fraud_probability"].between(p_lo, p_hi)
+mask = (result["risk_grade"].isin(bands) & result["fraud_probability"].between(s_lo, s_hi)
         & result["total_claim_amount"].between(a_lo, a_hi))
 if flagged_only:
     mask &= result["flagged"]
 if sev_opts:
-    mask &= result["incident_severity"].astype(str).isin(severities)
-if state_opts:
-    mask &= result["incident_state"].astype(str).isin(states)
+    mask &= result["incident_severity"].astype(str).isin(sev)
 view = result[mask].sort_values("fraud_probability", ascending=False)
+st.caption(f"Source **{st.session_state.get('batch_source')}** · {len(view):,} of {len(result):,} scored claims match the filters · "
+           f"review threshold {threshold:.2f}")
 
-st.caption(f"Source: **{st.session_state.get('batch_source')}** · showing **{len(view):,}** of {len(result):,} claims "
-           f"after filters · review threshold {threshold:.2f}")
-
-# ----------------------------------------------------------------- KPIs ---
-flagged = view[view["flagged"]]
-k1, k2, k3, k4, k5 = st.columns(5)
-with k1:
-    kpi_card("Claims in view", f"{len(view):,}", f"of {len(result):,} scored")
-with k2:
-    kpi_card("Recommended for review", f"{len(flagged):,}", f"{len(flagged) / max(1, len(view)):.0%} of view · ≥ {threshold:.2f}")
-with k3:
-    kpi_card("High risk", f"{int((view['risk_grade'] == 'High').sum()):,}", "priority SIU review suggested")
-with k4:
-    kpi_card("Value under review", f"${flagged['total_claim_amount'].sum():,.0f}",
-             f"{flagged['total_claim_amount'].sum() / max(1.0, view['total_claim_amount'].sum()):.0%} of view value")
-with k5:
-    kpi_card("Mean fraud probability", f"{view['fraud_probability'].mean():.1%}" if len(view) else "—", "across claims in view")
-
+# --------------------------------------------------------------- KPIs (A1)
+k = st.columns(6)
+cards = [("Claims in view", f"{len(view):,}", f"of {len(result):,} scored"),
+         ("Flagged for review", f"{int(view['flagged'].sum()):,}", f"score ≥ {threshold:.2f}"),
+         ("High", f"{int((view['risk_grade'] == 'High').sum()):,}", "risk band"),
+         ("Medium", f"{int((view['risk_grade'] == 'Medium').sum()):,}", "risk band"),
+         ("Low", f"{int((view['risk_grade'] == 'Low').sum()):,}", "risk band"),
+         ("Mean fraud-risk score", f"{view['fraud_probability'].mean():.2f}" if len(view) else "—", "claims in view")]
+for col, (t, v, sub) in zip(k, cards):
+    with col:
+        kpi_card(t, v, sub)
 if view.empty:
     st.warning("No claims match the current filters.")
     st.stop()
 
-# --------------------------------------------------------------- charts ---
-t_overview, t_drivers, t_top, t_all = st.tabs(["📊 Risk overview", "🔎 What drives the flags", "🚩 Top 20 suspicious", "📋 All claims"])
+# ------------------------------------------------------------- charts (A1)
+c1, c2 = st.columns(2)
+c1.plotly_chart(grade_distribution_bar(view), width="stretch")
+c2.plotly_chart(probability_histogram(view, threshold), width="stretch")
+c3, c4 = st.columns(2)
+if "incident_severity" in view:
+    c3.plotly_chart(score_by_category(view, "incident_severity", "Fraud-risk score by incident severity"), width="stretch")
+c4.plotly_chart(field_driver_bar(st.session_state["batch_field_shap"].loc[view.index], LABELS), width="stretch")
+st.plotly_chart(amount_vs_probability(view, threshold), width="stretch")
 
-with t_overview:
-    c1, c2 = st.columns(2)
-    c1.plotly_chart(grade_distribution_bar(view), width="stretch")
-    c2.plotly_chart(probability_histogram(view, threshold), width="stretch")
-    c3, c4 = st.columns(2)
-    if "incident_severity" in view:
-        c3.plotly_chart(flag_rate_by(view, "incident_severity", "Review rate by incident severity"), width="stretch")
-    c4.plotly_chart(amount_vs_probability(view, threshold), width="stretch")
-    if "incident_state" in view:
-        st.plotly_chart(flag_rate_by(view, "incident_state", "Review rate by incident state"), width="stretch")
-
-with t_drivers:
-    if len(flagged):
-        st.plotly_chart(driver_frequency_bar(flagged["top_reasons"].tolist()), width="stretch")
-        st.caption("Counts how often each claim field appears among the top-3 risk-RAISING factors of a flagged claim. "
-                   "If one field dominates, the queue is effectively being driven by that field — worth knowing before "
-                   "trusting the ranking (see the Model insights page on the Major-Damage baseline).")
-    else:
-        st.info("No flagged claims in the current view.")
-
+# ---------------------------------------------- top 20 + drill-down (A3)
+st.markdown("#### Top 20 suspicious claims")
 top20 = view.head(20).copy()
 top20.insert(0, "rank", range(1, len(top20) + 1))
-TOP_COLS = [c for c in ["rank", "claim_id", "fraud_probability", "risk_grade", "recommended_action", "total_claim_amount",
-                        "incident_severity", "incident_state", "police_report_available", "witnesses", "top_3_reasons"]
-            if c in top20.columns]
+TOP_COLS = [c for c in ["rank", "claim_id", "fraud_probability", "risk_grade", "flagged", "recommended_action",
+                        "total_claim_amount", "incident_severity", "top_3_reasons"] if c in top20.columns]
+event = st.dataframe(
+    top20[TOP_COLS], width="stretch", hide_index=True, key="top20_table", on_select="rerun", selection_mode="single-row",
+    column_config={"fraud_probability": st.column_config.ProgressColumn("Fraud-risk score", format="%.2f", min_value=0.0, max_value=1.0),
+                   "total_claim_amount": st.column_config.NumberColumn("Total claim", format="$%d"),
+                   "top_3_reasons": st.column_config.TextColumn("Top 3 reasons (▲ raises / ▼ lowers)", width="large")})
+selected_rows = getattr(getattr(event, "selection", None), "rows", []) or []
+ids = top20["claim_id"].tolist()
+default_idx = selected_rows[0] if selected_rows else 0
+pick = st.selectbox("Claim to explain (or select a row above)", ids, index=default_idx,
+                    format_func=lambda cid: f"Claim #{cid}")
+row = top20[top20["claim_id"] == pick].iloc[0]
 
-with t_top:
-    st.dataframe(
-        top20[TOP_COLS], width="stretch", hide_index=True,
-        column_config={
-            "fraud_probability": st.column_config.ProgressColumn("Fraud probability", format="%.2f", min_value=0.0, max_value=1.0),
-            "total_claim_amount": st.column_config.NumberColumn("Total claim", format="$%d"),
-            "top_3_reasons": st.column_config.TextColumn("Top 3 reasons (▲ raises / ▼ lowers)", width="large"),
-        },
-    )
-    pick = st.selectbox("Explain a claim", top20["claim_id"].tolist(),
-                        format_func=lambda cid: f"Claim #{cid} — p={float(top20.loc[top20['claim_id'] == cid, 'fraud_probability'].iloc[0]):.2f}")
-    row = top20[top20["claim_id"] == pick].iloc[0]
-    st.plotly_chart(reasons_bar(row["top_reasons"], title=f"Why claim #{pick} scored {row['fraud_probability']:.0%}"),
-                    width="stretch")
-    st.markdown(f"**Suggested next step:** {row['recommended_action']}")
-
+with st.container(border=True):
+    st.markdown(f"##### Claim #{pick} — fraud-risk score {row['fraud_probability']:.2f} · {row['risk_grade']} band · "
+                f"{'flagged for review' if row['flagged'] else 'not flagged'}")
+    st.markdown(f"**Recommended next step:** {row['recommended_action']}")
+    up, down = split_reasons(row["top_reasons"], k=5)
+    a, b = st.columns(2)
+    a.markdown("**Factors increasing risk**\n" + ("\n".join(f"- {r['sentence']}" for r in up) or "- none"))
+    b.markdown("**Factors reducing risk**\n" + ("\n".join(f"- {r['sentence']}" for r in down) or "- none"))
+    st.plotly_chart(reasons_bar(row["top_reasons"], title=f"Contributions for claim #{pick}"), width="stretch")
     with st.form("escalate"):
-        st.markdown("##### Escalate this claim for investigation")
-        investigator_name = st.text_input("Investigator name")
+        investigator = st.text_input("Investigator name")
         note = st.text_input("Investigator note")
         if st.form_submit_button("Escalate claim"):
             from app.db.persistence import persist_escalation
             db = new_db_session()
             try:
-                persist_escalation(db, int(pick), investigator_name, note)
+                persist_escalation(db, int(pick), investigator, note)
                 db.commit()
             finally:
                 db.close()
             st.session_state.setdefault("escalated_rows", []).append(
-                {**row.drop(labels=["top_reasons"]).to_dict(), "investigator": investigator_name, "note": note})
+                {**row.drop(labels=["top_reasons"]).to_dict(), "investigator": investigator, "note": note})
             st.success(f"Claim #{pick} escalated for investigation and recorded in the audit log.")
 
-with t_all:
-    show = view.drop(columns=["top_reasons"])
-    st.dataframe(show, width="stretch", hide_index=True,
-                 column_config={"fraud_probability": st.column_config.ProgressColumn("Fraud probability", format="%.2f",
-                                                                                    min_value=0.0, max_value=1.0)})
+with st.expander(f"Full filtered queue ({len(view):,} claims)"):
+    st.dataframe(view.drop(columns=["top_reasons"]), width="stretch", hide_index=True)
+if len(rejected):
+    with st.expander(f"Rejected rows ({len(rejected)})", expanded=True):
+        st.dataframe(rejected, width="stretch", hide_index=True)
 
-# ------------------------------------------------------------ downloads ---
-st.write("")
+# ------------------------------------------------------------ downloads (A4)
 st.markdown("#### Downloads")
-d1, d2, d3, d4 = st.columns(4)
-export_all = result.drop(columns=["top_reasons"])
-d1.download_button("⬇ Full scored batch", export_all.to_csv(index=False), "aegis_scored_batch.csv", "text/csv", width="stretch")
-d2.download_button("⬇ Current filtered view", view.drop(columns=["top_reasons"]).to_csv(index=False), "aegis_filtered_view.csv",
-                   "text/csv", width="stretch")
-d3.download_button("⬇ Top 20 suspicious", top20[TOP_COLS].to_csv(index=False), "aegis_top20_suspicious.csv", "text/csv",
-                   width="stretch")
+d1, d2, d3 = st.columns(3)
+d1.download_button("⬇ Filtered queue (CSV)", view.drop(columns=["top_reasons"]).to_csv(index=False),
+                   "aegis_filtered_queue.csv", "text/csv", width="stretch")
 esc = pd.DataFrame(st.session_state.get("escalated_rows", []))
-d4.download_button("⬇ Escalated claims", esc.to_csv(index=False) if len(esc) else "no escalations yet\n",
-                   "aegis_escalated_claims.csv", "text/csv", width="stretch", disabled=esc.empty)
+d2.download_button("⬇ Escalated list (CSV)", esc.to_csv(index=False) if len(esc) else "no escalations yet\n",
+                   "aegis_escalated.csv", "text/csv", width="stretch", disabled=esc.empty)
+d3.download_button("⬇ Rejected rows (CSV)", rejected.to_csv(index=False) if len(rejected) else "none\n",
+                   "aegis_rejected_rows.csv", "text/csv", width="stretch", disabled=rejected.empty)
