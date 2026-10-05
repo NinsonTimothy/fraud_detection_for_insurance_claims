@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="260" height="40" viewBox="0 0 260 40">
-  <path d="M18 3 L32 8 V19 C32 28 26 34 18 37 C10 34 4 28 4 19 V8 Z" fill="#7c9cff"/>
-  <path d="M18 9 L27 12.5 V19.5 C27 25.5 23.3 29.5 18 31.5 Z" fill="#ffffff" fill-opacity="0.35"/>
-  <path d="M12.5 19.5 L16.5 23.5 L24 15.5" fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="42" y="27" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="21" font-weight="700" fill="#e6e8ef">Aegis Risk Engine</text>
-</svg>
