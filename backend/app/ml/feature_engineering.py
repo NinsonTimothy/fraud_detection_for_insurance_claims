@@ -202,29 +202,41 @@ def apply_missing_defaults(df: pd.DataFrame) -> pd.DataFrame:
 CLAIM_COMPONENT_COLUMNS = ("injury_claim", "property_claim", "vehicle_claim")
 
 
+TOTAL_TOLERANCE = 1.0
+
+
+def inconsistent_total_mask(df: pd.DataFrame) -> pd.Series:
+    """A6: True for rows where ALL FOUR amounts are present and
+    total_claim_amount differs from injury + property + vehicle by more than
+    TOTAL_TOLERANCE. Such rows are REJECTED by the API (422) and listed in
+    the batch rejected-rows report — never silently corrected."""
+    cols = ["total_claim_amount", *CLAIM_COMPONENT_COLUMNS]
+    if not all(c in df.columns for c in cols):
+        return pd.Series(False, index=df.index)
+    v = df[cols].apply(pd.to_numeric, errors="coerce")
+    complete = v.notna().all(axis=1)
+    diff = (v["total_claim_amount"] - v[list(CLAIM_COMPONENT_COLUMNS)].sum(axis=1)).abs()
+    return complete & (diff > TOTAL_TOLERANCE)
+
+
 def derive_total_claim_amount(df: pd.DataFrame) -> pd.DataFrame:
-    """TC-01 (pre-defence fix): total_claim_amount is DERIVED, not typed.
+    """TC-01: total_claim_amount is DERIVED, not independent. In all 1,000
+    training rows it equals injury + property + vehicle exactly.
 
-    In all 1,000 training rows total_claim_amount == injury_claim +
-    property_claim + vehicle_claim exactly (verified, 0 mismatches), so it
-    is not independent information. The scoring form used to ask for it as
-    a separate input, which let an analyst enter a total that contradicted
-    the components — a combination the model never saw in training.
-
-    Rule: wherever all three components are present, the total is set to
-    their sum (a supplied total that disagrees is overwritten — the
-    components are the source of truth). If a component is missing, a
-    supplied total is kept as-is, and only if both are missing does the
-    documented default apply."""
+    This function only FILLS a missing total from complete components. It
+    never overwrites a supplied total: an inconsistent supplied total must
+    be caught by `inconsistent_total_mask()` and rejected upstream (API /
+    batch validation), not silently corrected here."""
     df = df.copy()
     if all(c in df.columns for c in CLAIM_COMPONENT_COLUMNS):
         parts = df[list(CLAIM_COMPONENT_COLUMNS)].apply(pd.to_numeric, errors="coerce")
         have_all = parts.notna().all(axis=1)
-        if have_all.any():
-            if "total_claim_amount" not in df.columns:
-                df["total_claim_amount"] = np.nan
-            df["total_claim_amount"] = pd.to_numeric(df["total_claim_amount"], errors="coerce")
-            df.loc[have_all, "total_claim_amount"] = parts.loc[have_all].sum(axis=1)
+        if "total_claim_amount" not in df.columns:
+            df["total_claim_amount"] = np.nan
+        total = pd.to_numeric(df["total_claim_amount"], errors="coerce")
+        fill = have_all & total.isna()
+        total.loc[fill] = parts.loc[fill].sum(axis=1)
+        df["total_claim_amount"] = total
     return df
 
 
@@ -354,7 +366,11 @@ def engineer_features(df: pd.DataFrame, include_proxy_features: bool | None = No
 
     # --- One-hot encode categoricals (incl. insured_hobbies) ---
     cat_df = df[CATEGORICAL_COLUMNS].astype(str).copy()
-    dummies = pd.get_dummies(cat_df, prefix=cat_df.columns, prefix_sep="_")
+    # EX-02: dtype=int, not the pandas default bool. With bool dummies, a
+    # claim's own category column was bool while padded-in columns from
+    # align_to_training_columns() were int 0 — the dtype mismatch that made
+    # the old explainer render one as "(yes)" and the other as "(0)".
+    dummies = pd.get_dummies(cat_df, prefix=cat_df.columns, prefix_sep="_", dtype=int)
     out = pd.concat([out, dummies], axis=1)
 
     return out
@@ -371,4 +387,4 @@ def align_to_training_columns(df: pd.DataFrame, training_columns: list[str]) -> 
     explicit fill_value silently produces NaN ("missing") instead of 0
     ("not this category") for every other category — corrupting every
     downstream score. Regression test: backend/tests/test_ml_core.py."""
-    return df.reindex(columns=training_columns, fill_value=0)
+    return df.reindex(columns=training_columns, fill_value=0).astype(float)

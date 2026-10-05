@@ -93,6 +93,21 @@ class ClaimExplainer:
             return raw[:, :, 1]
         return raw  # tree/linear binary explainers already return (n_rows, n_features)
 
+    def grouped_shap_matrix(self, X_scaled: pd.DataFrame) -> pd.DataFrame:
+        """A7: SHAP values summed over every one-hot column of the same raw
+        field (additivity), one column per PARENT field. Used for batch
+        "top drivers" and for global importance in Model Insights."""
+        sv = self.shap_values_for(X_scaled)
+        parents = [self._source_of.get(f, (f, None))[0] for f in self.feature_columns]
+        return pd.DataFrame(sv, columns=parents, index=X_scaled.index).T.groupby(level=0).sum().T
+
+    def grouped_global_importance(self, X_scaled: pd.DataFrame) -> pd.DataFrame:
+        g = self.grouped_shap_matrix(X_scaled).abs().mean()
+        out = g.sort_values(ascending=False).rename("mean_abs_shap").reset_index().rename(columns={"index": "field"})
+        out["share_of_total"] = out["mean_abs_shap"] / out["mean_abs_shap"].sum()
+        out["display_name"] = out["field"].map(lambda f: FEATURE_LABELS.get(f, _humanize(f)))
+        return out
+
     def global_importance(self, X: pd.DataFrame) -> pd.DataFrame:
         sv = self.shap_values_for(X)
         mean_abs = np.abs(sv).mean(axis=0)
@@ -160,31 +175,39 @@ class ClaimExplainer:
         groups: dict[str, dict] = {}
         for idx, feat in enumerate(self.feature_columns):
             source, category = self._source_of.get(feat, (feat, None))
-            g = groups.setdefault(source, {"shap": 0.0, "category": None, "idx": idx, "is_cat": category is not None})
+            g = groups.setdefault(source, {"shap": 0.0, "category": None, "idx": idx, "idxs": [], "is_cat": category is not None})
             g["shap"] += float(sv[idx])
+            g["idxs"].append(idx)
             if category is not None:
                 val = raw_values.iloc[idx]
                 if hasattr(val, "item"):
                     val = val.item()
-                if bool(val):
+                if float(val) == 1.0:  # EX-02: numeric compare, dtype-independent
                     g["category"] = category
 
         ordered = sorted(groups.items(), key=lambda kv: -abs(kv[1]["shap"]))[:k]
         max_abs = max((abs(g["shap"]) for _, g in ordered), default=0.0)
         reasons = []
         for rank, (source, g) in enumerate(ordered, start=1):
-            label = FEATURE_LABELS.get(source, _humanize(source))
+            label = FEATURE_LABELS_EXTRA.get(source) or FEATURE_LABELS.get(source, _humanize(source))
+            # display the column that carries the raw value of the parent field
+            names = [self.feature_columns[i] for i in g["idxs"]]
+            for pref in ("incident_severity_ordinal", source):
+                if pref in names:
+                    g["idx"] = g["idxs"][names.index(pref)]
+                    break
             if g["is_cat"]:
                 value = g["category"] if g["category"] is not None else "other / not seen in training"
-                display_value = value
+                display_value = {"YES": "Yes", "NO": "No"}.get(value, value)
                 value_out: object = value
             else:
                 idx = g["idx"]
                 raw_val = raw_values.iloc[idx]
                 if hasattr(raw_val, "item"):
                     raw_val = raw_val.item()
-                is_flag = pd.api.types.is_bool_dtype(dtypes.iloc[idx]) or source in FLAG_FEATURES
-                display_value = _format_feature_value(source, raw_val, is_flag)
+                col = self.feature_columns[idx]
+                is_flag = col in FLAG_FEATURES
+                display_value = _format_feature_value(col, raw_val, is_flag)
                 value_out = bool(raw_val) if is_flag else (float(raw_val) if isinstance(raw_val, (int, float, np.number)) else str(raw_val))
             direction = "increased" if g["shap"] > 0 else "decreased"
             impact = _impact_label(abs(g["shap"]), max_abs)
@@ -197,9 +220,16 @@ class ClaimExplainer:
                 "shap_value": g["shap"],
                 "direction": direction,
                 "impact": impact,
-                "sentence": f"{label}: {display_value} — {impact} {direction} the fraud risk score.",
+                "sentence": f"{label} is {display_value}, which {impact} {'raised' if g['shap'] > 0 else 'lowered'} the fraud-risk score.",
             })
         return reasons
+
+
+def split_reasons(reasons: list[dict], k: int = 5) -> tuple[list[dict], list[dict]]:
+    """A7: (factors increasing risk, factors reducing risk), each largest first."""
+    up = [r for r in reasons if r["shap_value"] > 0][:k]
+    down = [r for r in reasons if r["shap_value"] < 0][:k]
+    return up, down
 
 
 def _impact_label(abs_shap: float, max_abs_shap_in_row: float) -> str:
@@ -239,6 +269,14 @@ def _humanize(feature: str) -> str:
 # EX-01 helpers: map model columns back to the claim fields they came from,
 # and give every field a label an investigator would actually use.
 # ---------------------------------------------------------------------------
+DERIVED_PARENTS = {
+    "is_major_damage": "incident_severity", "incident_severity_ordinal": "incident_severity",
+    "is_new_customer": "months_as_customer",
+    "is_highrisk_hobby": "insured_hobbies", "is_exec_occupation": "insured_occupation",
+}
+FEATURE_LABELS_EXTRA = {"incident_severity": "Incident severity", "insured_hobbies": "High-risk hobby (proxy)",
+                        "insured_occupation": "Executive occupation (proxy)"}
+
 FLAG_FEATURES = {"is_highrisk_hobby", "is_exec_occupation", "is_new_customer", "is_major_damage"}
 
 FEATURE_LABELS = {
@@ -295,6 +333,11 @@ def build_source_map(feature_columns: list[str]) -> dict[str, tuple[str, str]]:
     from app.ml.feature_engineering import CATEGORICAL_COLUMNS
     prefixes = sorted(CATEGORICAL_COLUMNS, key=len, reverse=True)
     mapping = {}
+    # A7: single-parent engineered features belong to their raw field, so
+    # "Incident severity: Major Damage" is ONE reason, not two.
+    for col, parent in DERIVED_PARENTS.items():
+        if col in feature_columns:
+            mapping[col] = (parent, None)
     for col in feature_columns:
         for cat in prefixes:
             if col.startswith(cat + "_"):
