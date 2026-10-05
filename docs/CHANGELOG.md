@@ -1,3 +1,5 @@
+> **Pre-defence fixes (Oct 2026):** see [`PREDEFENCE_FIXES.md`](PREDEFENCE_FIXES.md). Numbers below this line are historical.
+
 # Changelog — full bug-fix/hardening pass
 
 This file is the final deliverable summary for the PB-xx/SH-xx bug-fix and

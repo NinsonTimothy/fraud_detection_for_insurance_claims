@@ -93,7 +93,9 @@ match real SIU practice:
 - `policy_age_at_incident_days` / `is_new_customer` — "new policy, big claim shortly after
   inception" is one of the best-documented real fraud indicators (matches the "unusual
   claim frequency or timing" category in NICB-aligned SIU guidance).
-- `is_no_witness` / `witnesses` — zero independent witnesses is a genuine, if weak,
+- **(Pre-defence update: `is_no_witness` has been REMOVED — in this dataset zero-witness claims have
+  the lowest fraud rate, 20.1% vs 29.6% at two witnesses, so the flag contradicted its own premise. See
+  `docs/LIMITATIONS.md`.)** Original text: `is_no_witness` / `witnesses` — zero independent witnesses is a genuine, if weak,
   signal consistent with staged-accident patterns.
 - `incident_severity` (the single highest-weight feature, 17.1% of SHAP) is plausible
   in principle — severity genuinely correlates with fraud motive — but its ordinal

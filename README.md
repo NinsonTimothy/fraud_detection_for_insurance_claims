@@ -16,7 +16,7 @@ Aegis Risk Engine supports:
 
 - Single-claim fraud scoring through a FastAPI API
 - Batch claim scoring from CSV files
-- Random Forest fraud classification
+- Leak-free champion selection (LR / RF / XGBoost vs. a one-line rule baseline)
 - SHAP-based local and global explanations
 - Cost-aware threshold analysis
 - Claim, audit, and feedback persistence
@@ -428,47 +428,38 @@ See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) for the full security discussio
 
 ### Shipped Model
 
-The current champion model is:
+The champion is chosen by `python -m app.ml.train` using **only the 800-row training split**
+(nested, repeated cross-validation, 15 paired folds; each candidate tunes its own
+hyperparameters and threshold on inner folds). Candidates: Logistic Regression, Random Forest,
+XGBoost, and a one-line baseline rule — *flag if incident severity is "Major Damage"*.
+The current champion is recorded in `models/metrics.json` (`primary_model`) and saved as
+`models/champion_model.pkl`.
 
-```text
-Random Forest
-```
+**Key finding:** no ML model beat the one-line rule on F1, and on the test set the shipped model's
+review decisions match the rule on every claim. The model's added value is ranking within groups
+and per-claim explanations. See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
 
 The deployable model excludes the project's identified proxy-style hobby and occupation features by default.
 
-The system prioritizes metrics in this order:
-
-```text
-Recall > F1 > PR-AUC > ROC-AUC > Accuracy
-```
-
-This reflects the project's assumption that missing a genuine fraud case is more costly than sending an additional legitimate claim for analyst review.
-
 ### Current Metric Snapshot
 
-The current generated metrics report identifies:
-
-| Metric | Random Forest |
-|---|---:|
-| Operating threshold | 0.44 |
-| Holdout recall | 73.5% |
-| Holdout precision | 63.2% |
-| Holdout F1 | 0.679 |
-| Holdout PR-AUC | 0.545 |
-| Holdout ROC-AUC | 0.794 |
-| Holdout accuracy | 83.0% |
-
-These values are a snapshot of the current artifacts and can change after retraining.
-
-The authoritative generated report is:
+Numbers are deliberately **not** copied here, because they go stale after every retrain. The
+authoritative, auto-generated report (including every p-value) is:
 
 [`docs/CURRENT_METRICS.md`](docs/CURRENT_METRICS.md)
 
 Regenerate it from `backend/` with:
 
 ```bash
+python -m app.ml.train              # several minutes (nested CV; ~20 min on a single core)
+python -m app.ml.evaluate_oracle
 python -m app.ml.generate_metrics_report
 ```
+
+### Decision support, not automated decisions
+
+Aegis recommends a level of scrutiny (standard handling / investigator review / priority SIU
+review). It never approves, denies, or settles a claim; an investigator makes every decision.
 
 ---
 

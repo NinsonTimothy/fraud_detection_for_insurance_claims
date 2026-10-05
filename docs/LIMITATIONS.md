@@ -4,10 +4,51 @@ This file is deliberately part of the delivered project, not an afterthought —
 a DCIT400 defense goes better when limitations are stated precisely and
 proactively than when a panel member finds them first.
 
+## Pre-defence findings (read these first)
+
+- **The model does not beat a one-line rule at deciding which claims to
+  review.** Leak-free selection (training split only, nested CV, 15 paired
+  folds) included the rule *flag if incident_severity = "Major Damage"* as a
+  baseline. No ML candidate beat it on F1 (Random Forest −0.004, corrected
+  p = 0.21; exact figures in `docs/CURRENT_METRICS.md`). On the 200 test
+  claims the shipped model's review/no-review decision is identical to the
+  rule's on every claim. Reason: in this dataset Major Damage claims are
+  ~60% fraud and every other severity is 7–13%, so one field carries almost
+  all the decision-level signal. What the model adds is (a) a ranking
+  *within* groups — the rule gives every Major Damage claim the same score,
+  so it cannot say which of ~80 to open first; PR-AUC is higher by +0.035,
+  though not significantly — and (b) a per-claim explanation. The system
+  is therefore presented as decision support, not as a better decider.
+- **The witness pattern runs the "wrong" way, and we treat it as a dataset
+  artefact.** Fraud rate by number of witnesses: 0 → 20.1%, 1 → 24.4%,
+  2 → 29.6%, 3 → 24.7% (≈250 claims each). Real-world guidance treats *no*
+  witnesses as the red flag. The engineered `is_no_witness` flag encoded that
+  real-world assumption and so pushed scores in the direction opposite to its
+  name; it has been removed. The raw `witnesses` count stays a feature, so
+  the model can still use whatever the data shows, but any reason code saying
+  "more witnesses raised the risk" reflects this dataset, not fraud
+  behaviour, and should not be generalised. Supporting evidence that it is an
+  artefact: on the independent Oracle dataset the relationship reverses
+  (a witness present: 3.4% fraud vs 6.0% without).
+- **On Oracle, the ranking is significantly inverted, not random.** ROC-AUC's
+  bootstrap 95% CI lies entirely below 0.5 (current values in
+  `docs/CURRENT_METRICS.md`; the wording there is derived from the CI by
+  code). In plain terms: on that dataset the model tends to give genuine
+  fraud cases slightly *lower* scores than legitimate ones. The most
+  plausible reason is that almost all of its weight sits on fields Oracle
+  lacks, and among the few shared fields the witness relationship is
+  reversed (above). Earlier documents that called this "random" have been
+  annotated.
+- **The test set is now touched once.** Before this fix, the champion
+  comparison cross-validated on all 1,000 rows, so test rows influenced
+  which model shipped. Selection now uses the 800 training rows only.
+- **Decision support only.** No risk band leads to automatic approval or
+  denial. The Low band recommends normal claims handling; a person decides.
+
 ## Data & modeling
 
 - **Small training set.** 1,000 rows, ~247 fraud cases; the shipped model's
-  exact feature count is in `models/metrics.json`'s `n_features` (70 with
+  exact feature count is in `models/metrics.json`'s `n_features` (69 after the pre-defence removal of `is_no_witness`; 70 before it, with
   the deployable default of proxy features excluded, see the bullet
   below — was 74 when they were included, after an earlier 122-feature
   version was found to overfit — see `docs/ml_feature_critique.md` and
