@@ -54,13 +54,13 @@ def _ci_caption(metric: str, base: str) -> str:
 st.caption(f"Shipped model: **{CHAMPION}** (computed by the pre-declared selection rule on the development rows only — see Model insights).")
 c1, c2, c3, c4 = st.columns(4)
 with c1:
-    kpi_card("Internal test ROC-AUC", f"{rf_row['roc_auc']:.3f}", _ci_caption("roc_auc", f"n_test={metrics['n_test']}"))
+    kpi_card("Test ROC-AUC", f"{rf_row['roc_auc']:.3f}", _ci_caption("roc_auc", f"n_test={metrics['n_test']}"))
 with c2:
-    kpi_card("Internal test PR-AUC", f"{rf_row['pr_auc']:.3f}", _ci_caption("pr_auc", f"fraud rate {metrics['fraud_rate']:.1%}"))
+    kpi_card("Test PR-AUC", f"{rf_row['pr_auc']:.3f}", _ci_caption("pr_auc", f"fraud rate {metrics['fraud_rate']:.1%}"))
 with c3:
-    kpi_card("Recall @ operating threshold", f"{rf_row['recall']:.1%}", _ci_caption("recall", f"threshold {metrics['operating_threshold']:.2f}"))
+    kpi_card("Recall @ threshold", f"{rf_row['recall']:.1%}", _ci_caption("recall", f"threshold {metrics['operating_threshold']:.2f}"))
 with c4:
-    kpi_card("Precision @ operating threshold", f"{rf_row['precision']:.1%}", _ci_caption("precision", f"{metrics['n_features']} engineered features"))
+    kpi_card("Precision @ threshold", f"{rf_row['precision']:.1%}", _ci_caption("precision", f"threshold {metrics['operating_threshold']:.2f}"))
 
 if cv_row is not None:
     st.caption(

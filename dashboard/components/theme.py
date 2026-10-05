@@ -25,7 +25,11 @@ def inject_css():
             border-radius: 14px; padding: 18px 20px; margin-bottom: 14px;
         }}
         .aeg-kpi-value {{ font-size: 28px; font-weight: 700; color: {TEXT}; }}
-        .aeg-kpi-label {{ font-size: 12px; color: {MUTED}; text-transform: uppercase; letter-spacing: .06em; }}
+        /* UI-01: every KPI card in a row has the same height; labels stay on one
+           line (full text on hover) and the help line sits at the bottom. */
+        .aeg-kpi {{ min-height: 132px; display: flex; flex-direction: column; }}
+        .aeg-kpi-help {{ color: {MUTED}; font-size: 12px; margin-top: auto; padding-top: 6px; line-height: 1.35; }}
+        .aeg-kpi-label {{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; color: {MUTED}; text-transform: uppercase; letter-spacing: .06em; }}
         .aeg-badge {{ display:inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight:600; }}
         .aeg-badge-low {{ background: {SUCCESS}22; color:{SUCCESS}; border:1px solid {SUCCESS}55; }}
         .aeg-badge-medium {{ background: {WARNING}22; color:{WARNING}; border:1px solid {WARNING}55; }}
@@ -51,8 +55,8 @@ def risk_badge(grade: str) -> str:
 
 def kpi_card(label: str, value: str, help_text: str = ""):
     st.markdown(
-        f"""<div class="aeg-card"><div class="aeg-kpi-label">{label}</div>
+        f"""<div class="aeg-card aeg-kpi"><div class="aeg-kpi-label" title="{label}">{label}</div>
         <div class="aeg-kpi-value">{value}</div>
-        <div style="color:{MUTED};font-size:12px;margin-top:4px;">{help_text}</div></div>""",
+        <div class="aeg-kpi-help">{help_text}</div></div>""",
         unsafe_allow_html=True,
     )

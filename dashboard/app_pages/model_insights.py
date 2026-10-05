@@ -131,7 +131,7 @@ removed in favor of the single documented flag each.
   is a standard actuarial red flag.
 - `policy_age_at_incident_days` / `is_new_customer` — "new policy, big claim shortly after" is one of
   the best-documented real fraud indicators.
-- ~~`is_no_witness`~~ — **removed (MS-02).** "No witnesses = suspicious" is a real-world red flag, but in
+- **`is_no_witness` — REMOVED from the model (MS-02).** "No witnesses = suspicious" is a real-world red flag, but in
   this dataset zero-witness claims have the LOWEST fraud rate (0: 20.1%, 1: 24.4%, 2: 29.6%, 3: 24.7%).
   The flag therefore contradicted its own name. The raw witness count is still a feature; the pattern is
   documented in docs/LIMITATIONS.md as a dataset artefact, not real fraud behaviour.
