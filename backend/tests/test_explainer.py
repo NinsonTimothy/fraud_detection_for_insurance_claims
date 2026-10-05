@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 import joblib
+from app.ml.inference import underlying_estimator
 import numpy as np
 import pandas as pd
 import pytest
@@ -55,8 +56,8 @@ def artifacts():
     X_test_scaled = test_df[feature_columns]
     return {
         "feature_columns": feature_columns,
-        "rf": rf_pipeline.named_steps["rf"],
-        "lr": lr_pipeline.named_steps["lr"],
+        "rf": underlying_estimator(rf_pipeline),
+        "lr": underlying_estimator(lr_pipeline),
         "X_test_scaled": X_test_scaled,
     }
 
@@ -111,7 +112,9 @@ def test_top_reasons_dict_is_plain_language(artifacts):
     for r in reasons:
         assert r["direction"] in {"increased", "decreased"}
         assert r["impact"] in {"strongly", "moderately", "slightly"}
-        assert r["display_name"] == r["feature"].replace("_", " ").replace("-", " ").strip()
+        # EX-01: display names are curated labels now, not humanized column names.
+        from app.ml.explainer import FEATURE_LABELS, FEATURE_LABELS_EXTRA
+        assert r["display_name"] == FEATURE_LABELS_EXTRA.get(r["feature"]) or r["display_name"] == FEATURE_LABELS.get(r["feature"], r["feature"].replace("_", " ").replace("-", " ").strip())
         assert r["display_name"] in r["sentence"]
     # The rank-1 reason must be the single largest-magnitude SHAP driver.
     assert abs(reasons[0]["shap_value"]) == max(abs(r["shap_value"]) for r in reasons)

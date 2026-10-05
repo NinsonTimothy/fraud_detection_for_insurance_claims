@@ -1,0 +1,26 @@
+{
+  "medium_edge": 0.14847323058741868,
+  "high_edge": 0.3795803870225068,
+  "rule": {
+    "high_band_fraud_capture": 0.5,
+    "medium_band_fraud_capture": 0.85,
+    "description": "High = top-scored development claims containing 50% of fraud; High + Medium contain 85%; derived from out-of-fold scores on the development split only."
+  },
+  "development_band_profile": {
+    "High": {
+      "share_of_claims": 0.21875,
+      "share_of_fraud": 0.5,
+      "fraud_rate_in_band": 0.5657142857142857
+    },
+    "Medium": {
+      "share_of_claims": 0.46,
+      "share_of_fraud": 0.35353535353535354,
+      "fraud_rate_in_band": 0.19021739130434784
+    },
+    "Low": {
+      "share_of_claims": 0.32125,
+      "share_of_fraud": 0.14646464646464646,
+      "fraud_rate_in_band": 0.11284046692607004
+    }
+  }
+}

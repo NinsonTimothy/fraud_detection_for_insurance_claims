@@ -1,5 +1,9 @@
 # Generalization and cross-validation results
 
+> **Historical document (Version A audit).** Its numbers describe the ORIGINAL model. For the current
+> model, the Oracle ROC-AUC confidence interval lies entirely below 0.5 — a **significantly inverted**
+> ranking, not a random one. Current figures: `docs/CURRENT_METRICS.md`.
+
 > **Note on this copy:** this is the original external-validation writeup
 > for the FYP prototype, carried into this repo verbatim as the source
 > document this rebuild implements against. The methodology it describes
@@ -96,7 +100,7 @@ all**, because Oracle simply doesn't collect them.
 |---|---|---|
 | Rows | 200 | 15,420 |
 | Fraud rate | 24.5% | 6.0% |
-| ROC-AUC | 0.860 | **0.496** (= random) |
+| ROC-AUC | 0.860 | **0.496** (= random for that Version-A model; the CURRENT model is significantly inverted, see note) |
 | PR-AUC | 0.618 | **0.060** (≈ Oracle's own base rate, 0.060) |
 | Claims flagged at the trained 0.55 threshold | 77.6% recall | **0** — every probability the model outputs on Oracle is between 0.271 and 0.318; nothing ever crosses 0.55 |
 

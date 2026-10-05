@@ -1,17 +1,75 @@
 {
-  "default_champion_per_D4": "logistic_regression",
-  "measured_champion": "random_forest",
-  "rationale": "Per the project's own success-metric hierarchy (Recall > F1 > PR-AUC > ROC-AUC > Accuracy), Random Forest wins both top-priority metrics on paired 5-fold CV: recall 0.8868 vs 0.8301 (paired t-test p=0.0086), F1 0.7517 vs 0.7223 (paired t-test p=0.0166). Logistic Regression wins on ROC-AUC/PR-AUC (ranked below recall/F1 in this project's own hierarchy). D4 says default to Logistic Regression 'unless my own nested-CV disagrees' \u2014 it does, on the metrics this project itself ranks first, so Random Forest is kept as champion with Logistic Regression reported as the runner-up/challenger, not the other way around.",
-  "paired_ttest": {
+  "protocol": {
+    "data": "development split only (800 rows); the 200-row test split is used once, for reporting",
+    "cv": "repeated stratified 5-fold x 10 repeats = 50 paired folds",
+    "thresholds": "each ML candidate: F1-optimal threshold on inner 5-fold out-of-fold predictions; rule: fixed (binary output)",
+    "imbalance": "class weighting only (no SMOTE)",
+    "significance_test": "Nadeau-Bengio corrected resampled t-test, two-sided, alpha=0.05",
+    "selection_rule": "best mean PR-AUC among ML models, unless a simpler model (LR < RF < XGB) is not significantly worse on PR-AUC, in which case the simplest such model; the rule baseline is reported but not eligible"
+  },
+  "best_pr_auc_model": "logistic_regression",
+  "champion": "logistic_regression",
+  "decision_trail": [
+    {
+      "candidate": "logistic_regression",
+      "decision": "best PR-AUC \u2014 qualifies"
+    }
+  ],
+  "champion_vs_rule": {
+    "pr_auc": {
+      "a": "logistic_regression",
+      "b": "major_damage_rule",
+      "metric": "pr_auc",
+      "mean_difference": 0.03760758731307101,
+      "a_wins_folds": 44,
+      "n_folds": 50,
+      "t": 1.8153455977248707,
+      "p_corrected": 0.07559312169864434,
+      "significant": false
+    },
     "recall": {
-      "t": 4.80440786142044,
-      "p": 0.008620386737644342
+      "a": "logistic_regression",
+      "b": "major_damage_rule",
+      "metric": "recall",
+      "mean_difference": -0.00656410256410257,
+      "a_wins_folds": 20,
+      "n_folds": 50,
+      "t": -0.21278297381879363,
+      "p_corrected": 0.8323790131410795,
+      "significant": false
     },
     "f1": {
-      "t": 3.9624193217084116,
-      "p": 0.01664389979245306
-    },
-    "n_folds": 5,
-    "note": "Both p-values ARE below the conventional 0.05 threshold (recall p=0.0086, F1 p=0.0166) across the 5 paired folds \u2014 Random Forest's recall/F1 advantage over Logistic Regression is consistent in direction and magnitude across every fold, not a fluke of one split. Still worth reading with the usual caution a 5-fold paired t-test deserves (only 4 degrees of freedom, so power is limited and the exact p-value is sensitive to the fold split) \u2014 treated as real, reproducible evidence for this dataset, not as license to over-claim certainty beyond it."
+      "a": "logistic_regression",
+      "b": "major_damage_rule",
+      "metric": "f1",
+      "mean_difference": -0.055933920419876465,
+      "a_wins_folds": 2,
+      "n_folds": 50,
+      "t": -2.948086630720518,
+      "p_corrected": 0.00488687288643666,
+      "significant": true
+    }
+  },
+  "champion_significantly_beats_rule_on": [],
+  "rule_significantly_beats_champion_on": [
+    "f1"
+  ],
+  "champion_cv_means": {
+    "pr_auc_mean": 0.520395351205618,
+    "roc_auc_mean": 0.7547772700784064,
+    "f1_mean": 0.5728921023803992,
+    "recall_mean": 0.6552307692307693,
+    "precision_mean": 0.5135922674053203,
+    "flag_rate_mean": 0.319125,
+    "threshold_mean": 0.528
+  },
+  "rule_cv_means": {
+    "pr_auc_mean": 0.48278776389254685,
+    "roc_auc_mean": 0.7578023945751218,
+    "f1_mean": 0.6288260228002757,
+    "recall_mean": 0.6617948717948718,
+    "precision_mean": 0.6018303581332435,
+    "flag_rate_mean": 0.27375,
+    "threshold_mean": 0.5
   }
 }

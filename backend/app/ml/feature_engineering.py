@@ -190,11 +190,80 @@ def apply_missing_defaults(df: pd.DataFrame) -> pd.DataFrame:
     Oracle genuinely has get real values, everything else gets a disclosed,
     neutral constant — nothing invented to move the score either way."""
     df = df.copy()
+    df = derive_total_claim_amount(df)
     for col in RAW_FEATURE_COLUMNS:
         if col not in df.columns:
             df[col] = MISSING_COLUMN_DEFAULTS[col]
         else:
             df[col] = df[col].fillna(MISSING_COLUMN_DEFAULTS[col])
+    return df
+
+
+CLAIM_COMPONENT_COLUMNS = ("injury_claim", "property_claim", "vehicle_claim")
+
+
+TOTAL_TOLERANCE = 1.0
+
+
+def inconsistent_total_mask(df: pd.DataFrame) -> pd.Series:
+    """A6: True for rows where ALL FOUR amounts are present and
+    total_claim_amount differs from injury + property + vehicle by more than
+    TOTAL_TOLERANCE. Such rows are REJECTED by the API (422) and listed in
+    the batch rejected-rows report — never silently corrected."""
+    cols = ["total_claim_amount", *CLAIM_COMPONENT_COLUMNS]
+    if not all(c in df.columns for c in cols):
+        return pd.Series(False, index=df.index)
+    v = df[cols].apply(pd.to_numeric, errors="coerce")
+    complete = v.notna().all(axis=1)
+    parts_present = v[list(CLAIM_COMPONENT_COLUMNS)].sum(axis=1, min_count=1)
+    diff = (v["total_claim_amount"] - v[list(CLAIM_COMPONENT_COLUMNS)].sum(axis=1)).abs()
+    # Found in the 5,000-row demo: a row with one component MISSING escaped the
+    # check while its remaining components already exceeded the total
+    # (property share 397%), and it ranked as the most suspicious claim.
+    # Parts can never exceed the whole, so that is rejected too.
+    exceeds = v["total_claim_amount"].notna() & parts_present.notna() & (parts_present > v["total_claim_amount"] + TOTAL_TOLERANCE)
+    return (complete & (diff > TOTAL_TOLERANCE)) | exceeds
+
+
+def derive_total_claim_amount(df: pd.DataFrame) -> pd.DataFrame:
+    """TC-01: total_claim_amount is DERIVED, not independent. In all 1,000
+    training rows it equals injury + property + vehicle exactly.
+
+    This function only FILLS a missing total from complete components. It
+    never overwrites a supplied total: an inconsistent supplied total must
+    be caught by `inconsistent_total_mask()` and rejected upstream (API /
+    batch validation), not silently corrected here."""
+    df = df.copy()
+    # An OMITTED component column is treated like a blank one, so an API
+    # caller who leaves a field out gets the same exact derivation.
+    if "total_claim_amount" in df.columns and any(c in df.columns for c in CLAIM_COMPONENT_COLUMNS):
+        for c in CLAIM_COMPONENT_COLUMNS:
+            if c not in df.columns:
+                df[c] = np.nan
+    if all(c in df.columns for c in CLAIM_COMPONENT_COLUMNS):
+        parts = df[list(CLAIM_COMPONENT_COLUMNS)].apply(pd.to_numeric, errors="coerce")
+        have_all = parts.notna().all(axis=1)
+        if "total_claim_amount" not in df.columns:
+            df["total_claim_amount"] = np.nan
+        total = pd.to_numeric(df["total_claim_amount"], errors="coerce")
+        fill = have_all & total.isna()
+        total.loc[fill] = parts.loc[fill].sum(axis=1)
+        df["total_claim_amount"] = total
+        # Found in the 5,000-row demo: when ONE component is blank but the
+        # total and the other two are present, the generic median default
+        # (e.g. property_claim = 13,100 against a 3,297 total) fabricated
+        # impossible shares (397%) and pushed such claims to the TOP of the
+        # queue. The missing part is exactly total - (other two), by the same
+        # identity that holds in every training row. Supplied values are never
+        # changed; a negative remainder means the row is inconsistent and is
+        # rejected by inconsistent_total_mask() instead.
+        one_missing = parts.isna().sum(axis=1).eq(1) & total.notna()
+        for col in CLAIM_COMPONENT_COLUMNS:
+            m = one_missing & parts[col].isna()
+            if m.any():
+                remainder = total[m] - parts.loc[m, [c for c in CLAIM_COMPONENT_COLUMNS if c != col]].sum(axis=1)
+                ok = remainder >= -TOTAL_TOLERANCE
+                df.loc[remainder.index[ok], col] = remainder[ok].clip(lower=0)
     return df
 
 
@@ -292,7 +361,18 @@ def engineer_features(df: pd.DataFrame, include_proxy_features: bool | None = No
     out["vehicle_age_at_incident"] = (incident_date.dt.year.fillna(INCIDENT_YEAR_FALLBACK) - df["auto_year"]).clip(lower=0)
 
     # --- Behavioral / structural flags (real signal) ---
-    out["is_no_witness"] = (df["witnesses"] == 0).astype(int)
+    # MS-02 (pre-defence fix): `is_no_witness` (witnesses == 0) was REMOVED.
+    # It encoded an assumption ("no witnesses = suspicious", a common
+    # staged-accident red flag) that this dataset contradicts: fraud rate by
+    # witness count is 0 -> 20.1%, 1 -> 24.4%, 2 -> 29.6%, 3 -> 24.7%
+    # (n = 249/258/250/243). Zero-witness claims are the LEAST likely to be
+    # fraud here, so the flag pushed scores in the opposite direction to its
+    # name, and reason codes like "no witness (yes) decreased the risk"
+    # confused reviewers. The raw `witnesses` count stays in
+    # NUMERIC_PASSTHROUGH_COLUMNS, so the model can still learn whatever the
+    # data shows; the counter-intuitive pattern is disclosed in
+    # docs/LIMITATIONS.md as a dataset artefact, not presented as real
+    # fraud behaviour.
     out["incident_severity_ordinal"] = df["incident_severity"].map(SEVERITY_ORDINAL).fillna(1).astype(int)
     out["is_major_damage"] = (df["incident_severity"] == "Major Damage").astype(int)
 
@@ -313,7 +393,11 @@ def engineer_features(df: pd.DataFrame, include_proxy_features: bool | None = No
 
     # --- One-hot encode categoricals (incl. insured_hobbies) ---
     cat_df = df[CATEGORICAL_COLUMNS].astype(str).copy()
-    dummies = pd.get_dummies(cat_df, prefix=cat_df.columns, prefix_sep="_")
+    # EX-02: dtype=int, not the pandas default bool. With bool dummies, a
+    # claim's own category column was bool while padded-in columns from
+    # align_to_training_columns() were int 0 — the dtype mismatch that made
+    # the old explainer render one as "(yes)" and the other as "(0)".
+    dummies = pd.get_dummies(cat_df, prefix=cat_df.columns, prefix_sep="_", dtype=int)
     out = pd.concat([out, dummies], axis=1)
 
     return out
@@ -330,4 +414,4 @@ def align_to_training_columns(df: pd.DataFrame, training_columns: list[str]) -> 
     explicit fill_value silently produces NaN ("missing") instead of 0
     ("not this category") for every other category — corrupting every
     downstream score. Regression test: backend/tests/test_ml_core.py."""
-    return df.reindex(columns=training_columns, fill_value=0)
+    return df.reindex(columns=training_columns, fill_value=0).astype(float)

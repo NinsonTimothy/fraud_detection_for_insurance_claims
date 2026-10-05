@@ -25,7 +25,6 @@ import numpy as np
 import pandas as pd
 from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline as ImbPipeline
-from scipy import stats
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, roc_auc_score
@@ -84,12 +83,14 @@ def _paired_cv(name: str, make_estimator, X: pd.DataFrame, y: pd.Series) -> dict
 
 
 def run_smote_vs_classweight() -> pd.DataFrame:
-    df = pd.read_csv(DATA_CLEANED, keep_default_na=False, na_values=[""])
-    y = (df["fraud_reported"] == "Y").astype(int)
-    X = engineer_features(df)
+    # MS-01: TRAIN split only (same split as train.py) — this experiment
+    # informs a modelling choice, so it must not see the test rows either.
+    from app.ml.train import load_and_split
+    train_df, _test_df, y, _y_test = load_and_split()
+    X = engineer_features(train_df)
 
     variants = {
-        "rf_smote_and_classweight (current, shipped)": lambda: ImbPipeline([
+        "rf_smote_and_classweight (previous build)": lambda: ImbPipeline([
             ("smote", SMOTE(random_state=RANDOM_STATE)),
             ("rf", RandomForestClassifier(n_estimators=200, max_depth=5, max_features=0.3,
                                            min_samples_leaf=2, min_samples_split=10,
@@ -101,12 +102,12 @@ def run_smote_vs_classweight() -> pd.DataFrame:
                                            min_samples_leaf=2, min_samples_split=10,
                                            class_weight=None, random_state=RANDOM_STATE)),
         ]),
-        "rf_classweight_only": lambda: SkPipeline([
+        "rf_classweight_only (shipped approach)": lambda: SkPipeline([
             ("rf", RandomForestClassifier(n_estimators=200, max_depth=5, max_features=0.3,
                                            min_samples_leaf=2, min_samples_split=10,
                                            class_weight="balanced_subsample", random_state=RANDOM_STATE)),
         ]),
-        "lr_smote_and_classweight (current, shipped alt.)": lambda: ImbPipeline([
+        "lr_smote_and_classweight (previous build)": lambda: ImbPipeline([
             ("smote", SMOTE(random_state=RANDOM_STATE)),
             ("lr", LogisticRegression(max_iter=2000, class_weight="balanced", random_state=RANDOM_STATE)),
         ]),
@@ -114,7 +115,7 @@ def run_smote_vs_classweight() -> pd.DataFrame:
             ("smote", SMOTE(random_state=RANDOM_STATE)),
             ("lr", LogisticRegression(max_iter=2000, class_weight=None, random_state=RANDOM_STATE)),
         ]),
-        "lr_classweight_only": lambda: SkPipeline([
+        "lr_classweight_only (shipped approach)": lambda: SkPipeline([
             ("lr", LogisticRegression(max_iter=2000, class_weight="balanced", random_state=RANDOM_STATE)),
         ]),
     }
@@ -127,104 +128,19 @@ def run_smote_vs_classweight() -> pd.DataFrame:
     return result_df
 
 
-def run_champion_comparison() -> dict:
-    """PB-14: paired (identical folds), refit-per-fold 5-fold CV for the
-    three shipped candidates, plus a paired t-test on recall and F1 (the
-    project's own top two priority metrics — see README.md's "Success
-    metrics, in priority order": Recall > F1 > PR-AUC > ROC-AUC >
-    Accuracy) comparing Random Forest against Logistic Regression, since
-    D4's default champion is a regularised Logistic Regression "unless my
-    own nested-CV disagrees".
-    """
-    df = pd.read_csv(DATA_CLEANED, keep_default_na=False, na_values=[""])
-    y = (df["fraud_reported"] == "Y").astype(int)
-    X = engineer_features(df)
-
-    candidates = {
-        "random_forest": lambda: ImbPipeline([
-            ("smote", SMOTE(random_state=RANDOM_STATE)),
-            ("rf", RandomForestClassifier(n_estimators=200, max_depth=5, max_features=0.3,
-                                           min_samples_leaf=2, min_samples_split=10,
-                                           class_weight="balanced_subsample", random_state=RANDOM_STATE)),
-        ]),
-        "logistic_regression": lambda: ImbPipeline([
-            ("smote", SMOTE(random_state=RANDOM_STATE)),
-            ("lr", LogisticRegression(max_iter=2000, class_weight="balanced", random_state=RANDOM_STATE)),
-        ]),
-        "xgboost": lambda: ImbPipeline([
-            ("smote", SMOTE(random_state=RANDOM_STATE)),
-            ("xgb", XGBClassifier(n_estimators=200, max_depth=4, learning_rate=0.05,
-                                   subsample=0.8, colsample_bytree=0.8, eval_metric="logloss",
-                                   random_state=RANDOM_STATE)),
-        ]),
-    }
-
-    # _paired_cv() builds its own StratifiedKFold(..., random_state=42) per
-    # call with identical inputs, so every candidate here sees the exact
-    # same 5 fold splits — a true paired comparison, not just similarly
-    # seeded independent runs.
-    results = {name: _paired_cv(name, factory, X, y) for name, factory in candidates.items()}
-
-    summary_rows = [{k: v for k, v in r.items() if not k.startswith("_")} for r in results.values()]
-    summary_df = pd.DataFrame(summary_rows)
-    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    summary_df.to_csv(PROCESSED_DIR / "champion_comparison_paired_cv.csv", index=False)
-
-    rf_recall, lr_recall = results["random_forest"]["_fold_recall"], results["logistic_regression"]["_fold_recall"]
-    rf_f1, lr_f1 = results["random_forest"]["_fold_f1"], results["logistic_regression"]["_fold_f1"]
-    recall_t, recall_p = stats.ttest_rel(rf_recall, lr_recall)
-    f1_t, f1_p = stats.ttest_rel(rf_f1, lr_f1)
-
-    decision = {
-        "default_champion_per_D4": "logistic_regression",
-        "measured_champion": "random_forest",
-        "rationale": (
-            "Per the project's own success-metric hierarchy (Recall > F1 > "
-            "PR-AUC > ROC-AUC > Accuracy), Random Forest wins both top-priority "
-            "metrics on paired 5-fold CV: recall "
-            f"{results['random_forest']['recall_mean']:.4f} vs "
-            f"{results['logistic_regression']['recall_mean']:.4f} "
-            f"(paired t-test p={recall_p:.4f}), F1 "
-            f"{results['random_forest']['f1_mean']:.4f} vs "
-            f"{results['logistic_regression']['f1_mean']:.4f} "
-            f"(paired t-test p={f1_p:.4f}). Logistic Regression wins on "
-            "ROC-AUC/PR-AUC (ranked below recall/F1 in this project's own "
-            "hierarchy). D4 says default to Logistic Regression 'unless my "
-            "own nested-CV disagrees' — it does, on the metrics this project "
-            "itself ranks first, so Random Forest is kept as champion with "
-            "Logistic Regression reported as the runner-up/challenger, not "
-            "the other way around."
-        ),
-        "paired_ttest": {
-            "recall": {"t": float(recall_t), "p": float(recall_p)},
-            "f1": {"t": float(f1_t), "p": float(f1_p)},
-            "n_folds": N_SPLITS,
-            "note": (
-                "Both p-values ARE below the conventional 0.05 threshold "
-                "(recall p=0.0086, F1 p=0.0166) across the 5 paired folds — "
-                "Random Forest's recall/F1 advantage over Logistic Regression "
-                "is consistent in direction and magnitude across every fold, "
-                "not a fluke of one split. Still worth reading with the usual "
-                "caution a 5-fold paired t-test deserves (only 4 degrees of "
-                "freedom, so power is limited and the exact p-value is "
-                "sensitive to the fold split) — treated as real, reproducible "
-                "evidence for this dataset, not as license to over-claim "
-                "certainty beyond it."
-            ),
-        },
-    }
-    with open(PROCESSED_DIR / "champion_decision.json", "w") as f:
-        json.dump(decision, f, indent=2)
-
-    print(summary_df.to_string(index=False))
-    print()
-    print(json.dumps(decision, indent=2))
-    return decision
+# MS-01 (pre-defence fix): `run_champion_comparison()` was REMOVED from this
+# file. It (a) cross-validated on all 1,000 rows, so the 200 test rows were
+# used to pick the champion, (b) compared models at a fixed 0.5 threshold,
+# (c) had no simple baseline, and (d) wrote a hardcoded note claiming
+# a recall p-value from an older configuration instead of the value it
+# actually computed for the shipped configuration (not significant). Champion selection now lives
+# in `app/ml/model_selection.py` and runs inside `python -m app.ml.train`;
+# every p-value is computed and written by code (champion_pairwise_tests.csv,
+# champion_decision.json) and never typed into prose.
 
 
 if __name__ == "__main__":
     print("=== SH-03: SMOTE vs. class_weight vs. both, paired 5-fold CV ===")
     run_smote_vs_classweight()
     print()
-    print("=== PB-14: paired champion comparison (RF vs LR vs XGB) ===")
-    run_champion_comparison()
+    print("Champion selection: run `python -m app.ml.train` (see app/ml/model_selection.py).")

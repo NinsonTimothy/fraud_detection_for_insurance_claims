@@ -4,10 +4,71 @@ This file is deliberately part of the delivered project, not an afterthought —
 a DCIT400 defense goes better when limitations are stated precisely and
 proactively than when a panel member finds them first.
 
+## Round 2 (read first) — numbers live in CURRENT_METRICS.md
+
+- **Champion is computed, and it is not Random Forest.** A rule written in code before results (best
+  development PR-AUC unless a simpler model is not significantly worse) selects the champion; the current
+  champion and the decision trail are in `docs/CURRENT_METRICS.md`. No ML model significantly beats the
+  one-line Major-Damage rule, and the rule significantly beats the champion on F1 — see section 1 there.
+- **Calibration rule was amended after the first run** (isotonic collapsed scores to a handful of values;
+  sigmoid now preferred). Disclosed in `models/metrics.json` → `calibration.amendment`.
+- **Cost threshold is a sensitivity analysis.** Under most assumption sets the cost-minimising policy is to
+  review nearly every claim, because claim amounts dwarf plausible review costs. It is never the operating threshold.
+- **Total Loss scores close to Minor Damage, far below Major Damage** (sensitivity probe), because Total Loss
+  claims are rarely fraud in this data. It is graded by the derived bands, never auto-approved.
+- **Blank claim components**: if exactly one of injury/property/vehicle is blank it is derived as total minus
+  the other two (found in the 5,000-row demo, where the median default produced a 397% share). Rows whose
+  total contradicts complete parts are rejected, never corrected.
+- **Docker not verified.** No Docker daemon/registry access in the build environment, so `docker compose up --build`
+  was NOT run this round; the 9 Docker tests skip. Do not claim the container build works until it is run.
+- **Fixed hyperparameters.** Candidates use fixed, pre-declared hyperparameters (no search), to keep the
+  50-fold comparison affordable and avoid tuning on 800 rows.
+
+## Pre-defence findings (round 1)
+
+- **The model does not beat a one-line rule at deciding which claims to
+  review.** Leak-free selection (training split only, nested CV, 15 paired
+  folds) included the rule *flag if incident_severity = "Major Damage"* as a
+  baseline. No ML candidate beat it on F1 (Random Forest −0.004, corrected
+  p = 0.21; exact figures in `docs/CURRENT_METRICS.md`). On the 200 test
+  claims the shipped model's review/no-review decision is identical to the
+  rule's on every claim. Reason: in this dataset Major Damage claims are
+  ~60% fraud and every other severity is 7–13%, so one field carries almost
+  all the decision-level signal. What the model adds is (a) a ranking
+  *within* groups — the rule gives every Major Damage claim the same score,
+  so it cannot say which of ~80 to open first; PR-AUC is higher by +0.035,
+  though not significantly — and (b) a per-claim explanation. The system
+  is therefore presented as decision support, not as a better decider.
+- **The witness pattern runs the "wrong" way, and we treat it as a dataset
+  artefact.** Fraud rate by number of witnesses: 0 → 20.1%, 1 → 24.4%,
+  2 → 29.6%, 3 → 24.7% (≈250 claims each). Real-world guidance treats *no*
+  witnesses as the red flag. The engineered `is_no_witness` flag encoded that
+  real-world assumption and so pushed scores in the direction opposite to its
+  name; it has been removed. The raw `witnesses` count stays a feature, so
+  the model can still use whatever the data shows, but any reason code saying
+  "more witnesses raised the risk" reflects this dataset, not fraud
+  behaviour, and should not be generalised. Supporting evidence that it is an
+  artefact: on the independent Oracle dataset the relationship reverses
+  (a witness present: 3.4% fraud vs 6.0% without).
+- **On Oracle, the ranking is significantly inverted, not random.** ROC-AUC's
+  bootstrap 95% CI lies entirely below 0.5 (current values in
+  `docs/CURRENT_METRICS.md`; the wording there is derived from the CI by
+  code). In plain terms: on that dataset the model tends to give genuine
+  fraud cases slightly *lower* scores than legitimate ones. The most
+  plausible reason is that almost all of its weight sits on fields Oracle
+  lacks, and among the few shared fields the witness relationship is
+  reversed (above). Earlier documents that called this "random" have been
+  annotated.
+- **The test set is now touched once.** Before this fix, the champion
+  comparison cross-validated on all 1,000 rows, so test rows influenced
+  which model shipped. Selection now uses the 800 training rows only.
+- **Decision support only.** No risk band leads to automatic approval or
+  denial. The Low band recommends normal claims handling; a person decides.
+
 ## Data & modeling
 
 - **Small training set.** 1,000 rows, ~247 fraud cases; the shipped model's
-  exact feature count is in `models/metrics.json`'s `n_features` (70 with
+  exact feature count is in `models/metrics.json`'s `n_features` (69 after the pre-defence removal of `is_no_witness`; 70 before it, with
   the deployable default of proxy features excluded, see the bullet
   below — was 74 when they were included, after an earlier 122-feature
   version was found to overfit — see `docs/ml_feature_critique.md` and

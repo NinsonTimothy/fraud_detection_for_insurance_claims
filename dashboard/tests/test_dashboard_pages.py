@@ -39,8 +39,8 @@ def test_score_claim_submit_renders_probability_no_exception():
     at.button[0].click().run(timeout=30)
     assert not at.exception, [str(e) for e in at.exception]
 
-    headings = [md.value for md in at.markdown if "fraud probability" in md.value]
-    assert headings, "expected a '### NN.N% fraud probability' heading to render"
+    headings = [md.value for md in at.markdown if "Fraud-risk score" in md.value]
+    assert headings, "expected a '### Fraud-risk score N.NN' heading to render"
 
 
 def test_score_claim_has_real_date_inputs_not_hardcoded():
@@ -58,25 +58,37 @@ def test_score_claim_has_real_date_inputs_not_hardcoded():
     assert labels["Policy bind date"] <= labels["Incident date"]
 
 
-def test_score_claim_hobby_and_occupation_are_selectboxes_over_known_categories():
-    """PB-19: these used to be free st.text_input fields — now
-    st.selectbox over feature_engineering.KNOWN_HOBBIES/KNOWN_OCCUPATIONS,
-    so an analyst can't submit a value outside the model's actual known
-    vocabulary."""
+def test_score_claim_form_asks_for_model_fields_not_unused_ones():
+    """SC-01: the form must ask for the fields the model actually uses
+    (incident state, umbrella limit, bodily injuries, ... previously
+    missing) and must NOT ask for hobby/occupation/ZIP, which the shipped
+    model (proxy features off) does not use at all."""
     import sys as _sys
     _sys.path.insert(0, str((DASHBOARD_ROOT.parent / "backend")))
-    from app.ml.feature_engineering import KNOWN_HOBBIES, KNOWN_OCCUPATIONS
+    from app.core.config import INCLUDE_PROXY_FEATURES
 
     at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "score_claim.py"))
     at.run(timeout=30)
     assert not at.exception, [str(e) for e in at.exception]
+    labels = {w.label for w in list(at.selectbox) + list(at.number_input) + list(at.slider) + list(at.select_slider)}
+    for needed in ("Incident state", "Umbrella limit ($)", "Bodily injuries", "Collision type",
+                   "Authorities contacted", "Policy state", "Incident type", "Vehicles involved"):
+        assert needed in labels, f"missing model field: {needed}"
+    if not INCLUDE_PROXY_FEATURES:
+        assert not any("hobby" in l.lower() or "occupation" in l.lower() or "zip" in l.lower() for l in labels)
 
-    hobby_box = next(s for s in at.selectbox if s.label == "Insured hobby")
-    occupation_box = next(s for s in at.selectbox if s.label == "Insured occupation")
-    assert list(hobby_box.options) == list(KNOWN_HOBBIES)
-    assert list(occupation_box.options) == list(KNOWN_OCCUPATIONS)
-    assert hobby_box.value in KNOWN_HOBBIES
-    assert occupation_box.value in KNOWN_OCCUPATIONS
+
+def test_score_claim_total_is_calculated_not_typed():
+    """TC-01: no input box for the total; it is shown as injury+property+vehicle."""
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "score_claim.py"))
+    at.run(timeout=30)
+    assert not any("total" in n.label.lower() for n in at.number_input)
+    next(n for n in at.number_input if n.label == "Injury claim ($)").set_value(1000.0)
+    next(n for n in at.number_input if n.label == "Property claim ($)").set_value(2000.0)
+    next(n for n in at.number_input if n.label == "Vehicle claim ($)").set_value(3000.0)
+    at.run(timeout=30)
+    total = next(m for m in at.metric if m.label == "Total claim (auto)")
+    assert total.value == "$6,000"
 
 
 def test_score_claim_uses_the_dates_actually_selected_not_a_constant():
@@ -151,8 +163,8 @@ def test_batch_review_upload_scores_claims_no_exception():
     at.file_uploader[0].set_value(("batch_test.csv", csv_bytes, "text/csv")).run(timeout=30)
     assert not at.exception, [str(e) for e in at.exception]
 
-    metrics = [m.value for m in at.metric]
-    assert metrics and metrics[0] == "5", f"expected 'Claims scored' == 5, got {metrics}"
+    kpis = "\n".join(m.value for m in at.markdown)
+    assert "Claims in view" in kpis and ">5<" in kpis.replace("\n", ""), "expected the 'Claims in view' KPI to show 5"
 
 
 def test_overview_then_score_in_sequence_no_exception():
@@ -168,7 +180,7 @@ def test_overview_then_score_in_sequence_no_exception():
     score.run(timeout=30)
     score.button[0].click().run(timeout=30)
     assert not score.exception, [str(e) for e in score.exception]
-    assert any("fraud probability" in md.value for md in score.markdown)
+    assert any("Fraud-risk score" in md.value for md in score.markdown)
 
 
 def test_model_insights_renders_no_exception():
@@ -208,7 +220,7 @@ def test_score_claim_persists_a_queryable_claim():
     finally:
         db.close()
 
-    saved_captions = [c.value for c in at.caption if "Saved as claim #" in c.value]
+    saved_captions = [m.value for m in at.markdown if "saved as claim #" in m.value.lower()]
     assert saved_captions, "expected a 'Saved as claim #N' caption confirming persistence"
 
 
@@ -243,7 +255,7 @@ def test_batch_review_persists_claims_and_escalation():
     # Escalate the (pre-selected) first row.
     at.text_input[0].set_value("j.analyst").run(timeout=30)
     at.text_input[1].set_value("please take a look").run(timeout=30)
-    at.button[0].click().run(timeout=30)
+    next(b for b in at.button if b.label == "Escalate claim").click().run(timeout=30)
     assert not at.exception, [str(e) for e in at.exception]
 
     db = SessionLocal()
@@ -273,4 +285,195 @@ def test_overview_shows_bootstrap_ci_caption():
     captions = [c.value for c in at.caption]
     kpi_captions = "\n".join(m.value for m in at.markdown)
     assert "95% CI" in kpi_captions or any("95% CI" in c for c in captions)
-    assert any("5-fold CV" in c for c in captions)
+    assert any("800 DEVELOPMENT rows" in c for c in captions)
+
+
+def test_batch_review_does_not_rescore_or_repersist_on_filter_change():
+    """BR-02: changing a filter must NOT re-score or re-save the batch."""
+    from app.db.models import Claim
+    from app.db.session import SessionLocal
+
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "batch_review.py"))
+    at.run(timeout=30)
+    sample = pd.read_csv(REPO_ROOT / "data" / "raw" / "insurance_claims_raw.csv").head(4)
+    at.file_uploader[0].set_value(("filter_test.csv", sample.to_csv(index=False).encode(), "text/csv")).run(timeout=30)
+    db = SessionLocal()
+    before = db.query(Claim).filter(Claim.ingested_via == "dashboard_batch").count()
+    db.close()
+    at.checkbox[0].check().run(timeout=30)
+    at.checkbox[0].uncheck().run(timeout=30)
+    assert not at.exception, [str(e) for e in at.exception]
+    db = SessionLocal()
+    after = db.query(Claim).filter(Claim.ingested_via == "dashboard_batch").count()
+    db.close()
+    assert after == before
+
+
+def test_batch_review_sample_button_renders_dashboard():
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "batch_review.py"))
+    at.run(timeout=30)
+    next(b for b in at.button if b.label == "Load sample batch").click().run(timeout=60)
+    assert not at.exception, [str(e) for e in at.exception]
+    md = "\n".join(m.value for m in at.markdown)
+    for kpi in ("Claims in view", "Flagged", "High", "Medium", "Low", "Mean score"):
+        assert kpi in md
+    labels = {b.label for b in at.get("download_button")}
+    assert {"⬇ Filtered queue (CSV)", "⬇ Escalated list (CSV)"} <= labels
+
+
+
+# ============================ D4 (round 2) ==================================
+def _batch_with_sample():
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "batch_review.py"))
+    at.run(timeout=60)
+    next(b for b in at.button if b.label == "Load sample batch").click().run(timeout=120)
+    assert not at.exception, [str(e) for e in at.exception]
+    return at
+
+
+def _kpi(at, title):
+    import re
+    md = "".join(m.value for m in at.markdown).replace("\n", "")
+    m = re.search(re.escape(title) + r".*?>([\d,]+)<", md)
+    return int(m.group(1).replace(",", "")) if m else None
+
+
+def test_every_page_renders_without_exception():
+    for page in ("overview", "batch_review", "score_claim", "model_insights", "monitoring"):
+        at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / f"{page}.py"))
+        at.run(timeout=60)
+        assert not at.exception, (page, [str(e) for e in at.exception])
+
+
+def test_batch_band_filter_drives_kpis_and_tables():
+    at = _batch_with_sample()
+    total, high = _kpi(at, "Claims in view"), _kpi(at, ">High<")
+    ms = next(m for m in at.multiselect if m.label == "Risk band")
+    ms.set_value(["High"]).run(timeout=60)
+    assert not at.exception
+    assert _kpi(at, "Claims in view") == high <= total
+    top = next(d for d in at.dataframe if "fraud_probability" in d.value.columns)
+    assert set(top.value["risk_grade"]) <= {"High"}
+
+
+def test_batch_drill_down_opens_explanation_for_chosen_claim():
+    at = _batch_with_sample()
+    sb = next(s for s in at.selectbox if s.label.startswith("Claim to explain"))
+    target = sb.options[1]
+    sb.set_value(int(target.replace("Claim #", "")) if isinstance(target, str) else target).run(timeout=60)
+    md = "\n".join(m.value for m in at.markdown)
+    assert "Factors increasing risk" in md and "Factors reducing risk" in md
+
+
+def test_batch_rejects_inconsistent_total_rows():
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "batch_review.py"))
+    at.run(timeout=60)
+    csv = b"injury_claim,property_claim,vehicle_claim,total_claim_amount,incident_severity\n1000,2000,3000,6000,Major Damage\n1000,2000,3000,9999,Minor Damage\n"
+    at.file_uploader[0].set_value(("bad.csv", csv, "text/csv")).run(timeout=60)
+    assert not at.exception, [str(e) for e in at.exception]
+    assert any("1 row(s) rejected" in e.value for e in at.error)
+    assert _kpi(at, "Claims in view") == 1
+
+
+def test_score_form_validation_blocks_impossible_dates():
+    from datetime import date
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "score_claim.py"))
+    at.run(timeout=30)
+    next(d for d in at.date_input if d.label == "Incident date").set_value(date(2000, 1, 1)).run(timeout=30)
+    assert any("before the policy bind date" in e.value for e in at.error)
+    assert next(b for b in at.button if b.label == "Score claim").disabled
+
+
+def test_score_form_police_report_no_is_explained_as_no():
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "score_claim.py"))
+    at.run(timeout=30)
+    next(s for s in at.selectbox if s.label == "Police report available?").set_value("NO").run(timeout=30)
+    next(b for b in at.button if b.label == "Score claim").click().run(timeout=60)
+    assert not at.exception, [str(e) for e in at.exception]
+    res = at.session_state["last_score"]["result"]
+    allr = res["top_reasons"] + res["factors_increasing_risk"] + res["factors_reducing_risk"]
+    assert all("(0)" not in r["sentence"] for r in allr)
+    svc_reasons = [r for r in allr if r["feature"] == "police_report_available"]
+    assert all(r["display_value"] == "No" for r in svc_reasons)
+    md = "\n".join(m.value for m in at.markdown)
+    assert "Factors increasing risk" in md and "Recommended next step" in md and "auto-approved" not in md
+
+
+# ======================= UI cleanup pass (round 3) ==========================
+import json as _json
+
+
+def _figs(at):
+    out = []
+    for el in at.get("plotly_chart"):
+        spec = _json.loads(el.proto.spec)
+        out.append(spec)
+    return out
+
+
+def _titles(at):
+    t = []
+    for f in _figs(at):
+        title = (f.get("layout", {}).get("title") or {})
+        t.append(title.get("text", "") if isinstance(title, dict) else str(title))
+    return t
+
+
+def test_removed_elements_are_gone():
+    at = _batch_with_sample()
+    assert not any("risk grade" in t.lower() for t in _titles(at)), "risk-grade bar chart should be removed"
+    sc = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "score_claim.py")); sc.run(timeout=30)
+    next(b for b in sc.button if b.label == "Score claim").click().run(timeout=60)
+    types = {tr.get("type") for f in _figs(sc) for tr in f.get("data", [])}
+    assert "indicator" not in types, "gauge should be removed"
+    assert "pie" not in types, "donut should be removed"
+    assert not any("held-out test claims" in t for t in _titles(sc)), "test-set histogram should be removed"
+
+
+def test_oracle_metric_deltas_are_numeric_and_negative_where_lower():
+    import re
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "monitoring.py")); at.run(timeout=60)
+    assert not at.exception, [str(e) for e in at.exception]
+    m = _json.load(open(REPO_ROOT / "models" / "metrics.json"))
+    champ = next(r for r in m["model_comparison"] if r["model"] == m["primary_model"])
+    rep = _json.load(open(REPO_ROOT / "data" / "external" / "oracle" / "oracle_validation_report.json"))["oracle_metrics"]
+    expected = {"ROC-AUC on Oracle": rep["roc_auc"] - champ["roc_auc"], "PR-AUC on Oracle": rep["pr_auc"] - champ["pr_auc"],
+                "Recall @ review threshold": rep["recall"] - champ["recall"]}
+    seen = {mt.label: mt.delta for mt in at.metric}
+    for label, diff in expected.items():
+        d = seen[label]
+        num = float(re.match(r"^\s*([+-]?\d*\.\d+)", d).group(1))  # numeric, not descriptive text
+        assert abs(num - diff) < 1e-3
+        if diff < 0:
+            assert d.strip().startswith("-")
+    rows = next(mt for mt in at.metric if mt.label == "Oracle rows scored")
+    assert not rows.delta  # no delta: fraud rate is a caption
+
+
+def test_monitoring_banner_wording_matches_ci():
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "monitoring.py")); at.run(timeout=60)
+    rep = _json.load(open(REPO_ROOT / "data" / "external" / "oracle" / "oracle_validation_report.json"))
+    ci = rep["oracle_metrics_ci"]["roc_auc"]
+    md = "\n".join(m.value for m in at.markdown)
+    if ci["ci_lower"] <= 0.5 <= ci["ci_upper"]:
+        assert "no measurable ranking signal" in md and "inverted" not in md.lower()
+
+
+def test_score_result_shows_band_edges_and_no_percentage_score():
+    import re
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "score_claim.py")); at.run(timeout=30)
+    next(b for b in at.button if b.label == "Score claim").click().run(timeout=60)
+    pol = _json.load(open(REPO_ROOT / "models" / "risk_policy.json"))
+    md = "\n".join(m.value for m in at.markdown)
+    assert f"{pol['medium_edge']:.2f}" in md and f"{pol['high_edge']:.2f}" in md and "review threshold" in md
+    assert re.search(r"Fraud-risk score 0\.\d\d", md)
+    assert not re.search(r"Fraud-risk score \d+(\.\d)?%", md)
+
+
+def test_batch_histogram_has_band_edges_and_threshold_lines():
+    at = _batch_with_sample()
+    hist = next(f for f in _figs(at) if "distribution" in str(f.get("layout", {}).get("title", "")).lower())
+    texts = [a.get("text", "") for a in hist["layout"].get("annotations", [])]
+    assert any("Low|Medium" in t for t in texts) and any("Medium|High" in t for t in texts) and any("review threshold" in t for t in texts)
+    ys = [a["y"] for a in hist["layout"]["annotations"]]
+    assert len(set(ys)) == len(ys)  # staggered: labels cannot sit on top of each other

@@ -1,0 +1,35 @@
+raw_field,oracle_source,fidelity
+months_as_customer,—,unmappable
+age,Age,direct
+policy_bind_date,incident_date - Days_Policy_Claim (bucketed),approximate
+policy_state,—,unmappable
+policy_csl,—,unmappable
+policy_deductable,Deductible,direct
+policy_annual_premium,—,unmappable
+umbrella_limit,—,unmappable
+insured_zip,—,unmappable
+insured_sex,Sex,direct
+insured_education_level,—,unmappable
+insured_occupation,—,unmappable
+insured_hobbies,—,unmappable
+insured_relationship,—,unmappable
+capital-gains,—,unmappable
+capital-loss,—,unmappable
+incident_date,Year + MonthClaimed + WeekOfMonthClaimed,approximate
+incident_type,—,unmappable
+collision_type,—,unmappable
+incident_severity,—,unmappable
+authorities_contacted,—,unmappable
+incident_state,—,unmappable
+incident_hour_of_the_day,—,unmappable
+number_of_vehicles_involved,NumberOfCars (bucketed),approximate
+property_damage,—,unmappable
+bodily_injuries,—,unmappable
+witnesses,WitnessPresent (Yes/No -> 1/0; not a count),approximate
+police_report_available,PoliceReportFiled,direct
+total_claim_amount,—,unmappable
+injury_claim,—,unmappable
+property_claim,—,unmappable
+vehicle_claim,—,unmappable
+auto_make,—,unmappable
+auto_year,incident year - AgeOfVehicle (bucketed),approximate

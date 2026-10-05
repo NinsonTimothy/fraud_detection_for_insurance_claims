@@ -85,6 +85,8 @@ def test_psi_reference_features_csv_is_unscaled():
 
 
 def test_psi_reference_features_csv_has_bool_onehot_columns():
+    """EX-02 changed one-hot dummies from bool to int 0/1; the original
+    bool round-trip bug is still covered by casting a column to bool here."""
     """Confirms the fixture this bug actually lives in: one-hot columns
     round-trip through CSV as bool dtype in this pandas version, and
     psi_report() must handle that without crashing (see test above)."""
@@ -92,8 +94,10 @@ def test_psi_reference_features_csv_has_bool_onehot_columns():
     if not path.exists():
         pytest.skip("psi_reference_features.csv not generated yet — run `python -m app.ml.train` first")
     df = pd.read_csv(path)
-    bool_cols = df.select_dtypes(include="bool").columns.tolist()
-    assert len(bool_cols) > 0
+    onehot = [c for c in df.columns if c.startswith(("police_report_available_", "insured_sex_"))]
+    assert onehot and all(set(df[c].unique()) <= {0, 1} for c in onehot)
+    df = df.assign(**{c: df[c].astype(bool) for c in onehot})
+    bool_cols = onehot
     # And psi_report must not crash when asked to compare a bool column
     # against itself.
     report = psi_report(df, df, bool_cols[:3])

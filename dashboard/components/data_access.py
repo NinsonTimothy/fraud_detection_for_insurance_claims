@@ -52,7 +52,7 @@ def new_db_session():
 
 
 def models_are_available() -> bool:
-    return (MODELS_DIR / "random_forest_final.pkl").exists()
+    return (MODELS_DIR / "champion_model.pkl").exists() or (MODELS_DIR / "random_forest_final.pkl").exists()
 
 
 @st.cache_data
@@ -118,3 +118,54 @@ def load_oracle_psi() -> pd.DataFrame:
 def load_oracle_model_comparison() -> pd.DataFrame:
     path = PROCESSED_DIR / "oracle_model_comparison.csv"
     return pd.read_csv(path) if path.exists() else pd.DataFrame()
+
+
+@st.cache_data
+def load_field_importance() -> pd.DataFrame:
+    """SHAP importance grouped back to original claim fields (one-hot
+    dummies summed) — written by train.py."""
+    path = PROCESSED_DIR / "shap_importance_by_field.csv"
+    return pd.read_csv(path) if path.exists() else pd.DataFrame()
+
+
+@st.cache_data
+def load_champion_decision() -> dict:
+    path = PROCESSED_DIR / "champion_decision.json"
+    if not path.exists():
+        return {}
+    with open(path) as f:
+        return json.load(f)
+
+
+@st.cache_data
+def load_selection_summary() -> pd.DataFrame:
+    path = PROCESSED_DIR / "model_selection_summary.csv"
+    return pd.read_csv(path) if path.exists() else pd.DataFrame()
+
+
+@st.cache_data
+def load_pairwise_tests() -> pd.DataFrame:
+    path = PROCESSED_DIR / "pairwise_tests.csv"
+    return pd.read_csv(path) if path.exists() else pd.DataFrame()
+
+
+SAMPLES_DIR = PROJECT_ROOT / "data" / "samples"
+
+
+def oracle_roc_verdict(roc: float, ci: dict | None) -> tuple[str, str]:
+    """OR-01: delegates to the backend's single wording function so the
+    dashboard and the generated docs can never disagree."""
+    from app.ml.reporting import roc_ci_verdict
+    return roc_ci_verdict(roc, ci)
+
+
+@st.cache_data
+def load_witness_fraud_rates() -> dict:
+    """Fraud rate per witness count, computed from the cleaned training data (never typed)."""
+    df = pd.read_csv(PROJECT_ROOT / "data" / "cleaned" / "insurance_claims_cleaned.csv")
+    return {int(k): float(v) for k, v in df.groupby("witnesses")["fraud_reported"].apply(lambda s: (s == "Y").mean()).items()}
+
+
+@st.cache_data
+def load_cleaned_data() -> pd.DataFrame:
+    return pd.read_csv(PROJECT_ROOT / "data" / "cleaned" / "insurance_claims_cleaned.csv", keep_default_na=False, na_values=[""])
