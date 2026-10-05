@@ -220,7 +220,7 @@ def test_score_claim_persists_a_queryable_claim():
     finally:
         db.close()
 
-    saved_captions = [m.value for m in at.markdown if "Saved as claim #" in m.value]
+    saved_captions = [m.value for m in at.markdown if "saved as claim #" in m.value.lower()]
     assert saved_captions, "expected a 'Saved as claim #N' caption confirming persistence"
 
 
@@ -315,7 +315,7 @@ def test_batch_review_sample_button_renders_dashboard():
     next(b for b in at.button if b.label == "Load sample batch").click().run(timeout=60)
     assert not at.exception, [str(e) for e in at.exception]
     md = "\n".join(m.value for m in at.markdown)
-    for kpi in ("Claims in view", "Flagged for review", "High", "Medium", "Low", "Mean fraud-risk score"):
+    for kpi in ("Claims in view", "Flagged", "High", "Medium", "Low", "Mean score"):
         assert kpi in md
     labels = {b.label for b in at.get("download_button")}
     assert {"⬇ Filtered queue (CSV)", "⬇ Escalated list (CSV)"} <= labels
@@ -397,3 +397,83 @@ def test_score_form_police_report_no_is_explained_as_no():
     assert all(r["display_value"] == "No" for r in svc_reasons)
     md = "\n".join(m.value for m in at.markdown)
     assert "Factors increasing risk" in md and "Recommended next step" in md and "auto-approved" not in md
+
+
+# ======================= UI cleanup pass (round 3) ==========================
+import json as _json
+
+
+def _figs(at):
+    out = []
+    for el in at.get("plotly_chart"):
+        spec = _json.loads(el.proto.spec)
+        out.append(spec)
+    return out
+
+
+def _titles(at):
+    t = []
+    for f in _figs(at):
+        title = (f.get("layout", {}).get("title") or {})
+        t.append(title.get("text", "") if isinstance(title, dict) else str(title))
+    return t
+
+
+def test_removed_elements_are_gone():
+    at = _batch_with_sample()
+    assert not any("risk grade" in t.lower() for t in _titles(at)), "risk-grade bar chart should be removed"
+    sc = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "score_claim.py")); sc.run(timeout=30)
+    next(b for b in sc.button if b.label == "Score claim").click().run(timeout=60)
+    types = {tr.get("type") for f in _figs(sc) for tr in f.get("data", [])}
+    assert "indicator" not in types, "gauge should be removed"
+    assert "pie" not in types, "donut should be removed"
+    assert not any("held-out test claims" in t for t in _titles(sc)), "test-set histogram should be removed"
+
+
+def test_oracle_metric_deltas_are_numeric_and_negative_where_lower():
+    import re
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "monitoring.py")); at.run(timeout=60)
+    assert not at.exception, [str(e) for e in at.exception]
+    m = _json.load(open(REPO_ROOT / "models" / "metrics.json"))
+    champ = next(r for r in m["model_comparison"] if r["model"] == m["primary_model"])
+    rep = _json.load(open(REPO_ROOT / "data" / "external" / "oracle" / "oracle_validation_report.json"))["oracle_metrics"]
+    expected = {"ROC-AUC on Oracle": rep["roc_auc"] - champ["roc_auc"], "PR-AUC on Oracle": rep["pr_auc"] - champ["pr_auc"],
+                "Recall @ review threshold": rep["recall"] - champ["recall"]}
+    seen = {mt.label: mt.delta for mt in at.metric}
+    for label, diff in expected.items():
+        d = seen[label]
+        num = float(re.match(r"^\s*([+-]?\d*\.\d+)", d).group(1))  # numeric, not descriptive text
+        assert abs(num - diff) < 1e-3
+        if diff < 0:
+            assert d.strip().startswith("-")
+    rows = next(mt for mt in at.metric if mt.label == "Oracle rows scored")
+    assert not rows.delta  # no delta: fraud rate is a caption
+
+
+def test_monitoring_banner_wording_matches_ci():
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "monitoring.py")); at.run(timeout=60)
+    rep = _json.load(open(REPO_ROOT / "data" / "external" / "oracle" / "oracle_validation_report.json"))
+    ci = rep["oracle_metrics_ci"]["roc_auc"]
+    md = "\n".join(m.value for m in at.markdown)
+    if ci["ci_lower"] <= 0.5 <= ci["ci_upper"]:
+        assert "no measurable ranking signal" in md and "inverted" not in md.lower()
+
+
+def test_score_result_shows_band_edges_and_no_percentage_score():
+    import re
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "score_claim.py")); at.run(timeout=30)
+    next(b for b in at.button if b.label == "Score claim").click().run(timeout=60)
+    pol = _json.load(open(REPO_ROOT / "models" / "risk_policy.json"))
+    md = "\n".join(m.value for m in at.markdown)
+    assert f"{pol['medium_edge']:.2f}" in md and f"{pol['high_edge']:.2f}" in md and "review threshold" in md
+    assert re.search(r"Fraud-risk score 0\.\d\d", md)
+    assert not re.search(r"Fraud-risk score \d+(\.\d)?%", md)
+
+
+def test_batch_histogram_has_band_edges_and_threshold_lines():
+    at = _batch_with_sample()
+    hist = next(f for f in _figs(at) if "distribution" in str(f.get("layout", {}).get("title", "")).lower())
+    texts = [a.get("text", "") for a in hist["layout"].get("annotations", [])]
+    assert any("Low|Medium" in t for t in texts) and any("Medium|High" in t for t in texts) and any("review threshold" in t for t in texts)
+    ys = [a["y"] for a in hist["layout"]["annotations"]]
+    assert len(set(ys)) == len(ys)  # staggered: labels cannot sit on top of each other
