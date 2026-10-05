@@ -103,7 +103,7 @@ def test_valid_batch_csv_still_scores_successfully(client):
     good_csv = io.BytesIO(b"age,total_claim_amount\n35,50000\n40,60000\n")
     r = client.post("/score/batch", files={"file": ("good.csv", good_csv, "text/csv")})
     assert r.status_code == 200
-    assert len(r.json()) == 2
+    assert len(r.json()["scored"]) == 2
 
 
 def test_batch_scoring_includes_top_reasons_per_row(client):
@@ -115,7 +115,7 @@ def test_batch_scoring_includes_top_reasons_per_row(client):
     good_csv = io.BytesIO(b"age,total_claim_amount\n35,50000\n40,60000\n")
     r = client.post("/score/batch", files={"file": ("good.csv", good_csv, "text/csv")})
     assert r.status_code == 200
-    rows = r.json()
+    rows = r.json()["scored"]
     assert len(rows) == 2
     for row in rows:
         assert row["top_reasons"], "expected a non-empty top_reasons list for every batch-scored row"
@@ -163,7 +163,7 @@ def test_batch_csv_with_missing_optional_numeric_field_is_200_not_422(client):
     csv_bytes = io.BytesIO(b"age,total_claim_amount\n35,\n40,60000\n")
     r = client.post("/score/batch", files={"file": ("missing_optional.csv", csv_bytes, "text/csv")})
     assert r.status_code == 200
-    assert len(r.json()) == 2
+    assert len(r.json()["scored"]) == 2
 
 
 def test_invalid_insured_zip_in_batch_csv_is_422(client):
@@ -198,7 +198,7 @@ def test_missing_zip_and_dates_in_batch_csv_is_not_an_error(client):
     csv_bytes = io.BytesIO(b"age,insured_zip,incident_date\n35,,\n40,468000,2023-05-10\n")
     r = client.post("/score/batch", files={"file": ("missing_zip_date.csv", csv_bytes, "text/csv")})
     assert r.status_code == 200
-    assert len(r.json()) == 2
+    assert len(r.json()["scored"]) == 2
 
 
 def test_batch_scored_claim_with_missing_optional_fields_is_retrievable_afterward(client):
@@ -220,7 +220,7 @@ def test_batch_scored_claim_with_missing_optional_fields_is_retrievable_afterwar
     csv_bytes = io.BytesIO(b"age,total_claim_amount,incident_date,policy_bind_date\n52,,,\n")
     batch = client.post("/score/batch", files={"file": ("blank_fields.csv", csv_bytes, "text/csv")})
     assert batch.status_code == 200
-    claim_id = batch.json()[0]["claim_id"]
+    claim_id = batch.json()["scored"][0]["claim_id"]
 
     detail = client.get(f"/claims/{claim_id}")
     assert detail.status_code == 200
@@ -257,7 +257,7 @@ def test_batch_scored_claim_zip_masks_identically_to_single_scored_claim(client)
     csv_bytes = io.BytesIO(b"age,insured_zip\n35,468000\n40,\n")
     batch = client.post("/score/batch", files={"file": ("zips.csv", csv_bytes, "text/csv")})
     assert batch.status_code == 200
-    rows = batch.json()
+    rows = batch.json()["scored"]
 
     present_row = client.get(f"/claims/{rows[0]['claim_id']}").json()
     assert present_row["raw_payload"]["insured_zip"] == single_masked_zip == "46XXXX"

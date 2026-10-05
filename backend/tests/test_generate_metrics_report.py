@@ -1,103 +1,55 @@
-"""test_generate_metrics_report.py — PB-15: this project's working rules
-require every number quoted in docs/ to come from models/metrics.json (and
-the other real data/processed/ artifacts), never be hand-typed. Before this
-ticket that was enforced only by manual discipline — generate_metrics_report.py
-is the dedicated script that actually generates a docs page from those
-artifacts, and this file locks in that it produces internally-consistent,
-correctly-sourced output rather than silently drifting or crashing on a
-missing optional artifact."""
+"""D3: the generated report must agree with the artifacts it is built from."""
+from __future__ import annotations
+
+import json
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from app.ml.generate_metrics_report import (PROCESSED_DIR, build_report_markdown, load_champion_decision,
+                                            load_metrics, load_oracle_report)
+from app.ml.reporting import roc_ci_verdict
 
-from app.ml.generate_metrics_report import build_report_markdown, load_champion_decision, load_metrics, load_oracle_report
-
-
-def test_report_includes_the_real_shipped_model_and_threshold():
-    metrics = load_metrics()
-    report = build_report_markdown()
-    assert metrics["primary_model"] in report
-    primary_row = next(r for r in metrics["model_comparison"] if r["model"] == metrics["primary_model"])
-    assert str(primary_row["threshold"]) in report
+pytestmark = pytest.mark.skipif(load_metrics() is None, reason="artifacts not generated")
 
 
-def test_report_model_comparison_table_matches_metrics_json_exactly():
-    """Every recall/precision/f1/roc_auc figure in the generated table must
-    be traceable byte-for-byte back to models/metrics.json — the whole
-    point of this script existing."""
-    metrics = load_metrics()
-    report = build_report_markdown()
-    for row in metrics["model_comparison"]:
-        assert f"{row['roc_auc']:.3f}" in report
-        assert f"{row['pr_auc']:.3f}" in report
-        assert f"{row['f1']:.3f}" in report
+def test_report_names_computed_champion_and_threshold():
+    m, r = load_metrics(), build_report_markdown()
+    assert f"`{m['primary_model']}`" in r
+    assert f"{m['operating_threshold']:.2f}" in r
 
 
-def test_report_flags_when_oracle_ci_excludes_random_chance():
-    """PB-15/SH-05: a concrete, reproduced instance of doc drift was found
-    building this ticket — REBUILD_NOTES.md's own comparison table
-    (written against an earlier training run) called the Oracle result
-    "~0.48 (random)", but the CURRENT models/metrics.json-backed Oracle
-    bootstrap CI no longer contains 0.5 at all, so "random" is no longer
-    the most accurate characterization. This test locks in that the
-    generator itself gets this distinction right, so it can never silently
-    repeat that mistake."""
-    oracle = load_oracle_report()
-    if oracle is None or "oracle_metrics_ci" not in oracle:
-        pytest.skip("no Oracle validation report on disk in this environment")
-    report = build_report_markdown()
-    roc_ci = oracle["oracle_metrics_ci"]["roc_auc"]
-    contains_half = roc_ci["ci_lower"] <= 0.5 <= roc_ci["ci_upper"]
-    # OR-01: wording is derived from the CI. Below 0.5 entirely => the
-    # report must say "significantly inverted", never "random".
-    if roc_ci["ci_upper"] < 0.5:
-        assert "significantly inverted" in report
-    elif contains_half:
-        assert "indistinguishable from random" in report
-    else:
-        assert "better than random" in report
+def test_report_test_table_matches_metrics_json():
+    m, r = load_metrics(), build_report_markdown()
+    for row in m["model_comparison"]:
+        assert f"| {row['model']} | {row['threshold']:.3f} | {row['recall']:.3f} | {row['precision']:.3f} | {row['f1']:.3f} |" in r
 
 
-def test_report_includes_champion_selection_low_power_caveat_when_available():
-    champion = load_champion_decision()
-    if champion is None:
-        pytest.skip("no champion_decision.json on disk in this environment")
-    report = build_report_markdown()
-    assert champion["measured_champion"] in report
-    assert "corrected resampled t-test" in report
+def test_report_p_values_equal_the_computed_csv():
+    r = build_report_markdown()
+    assert "0.0086" not in r and "0.0166" not in r
+    for _, row in pd.read_csv(PROCESSED_DIR / "pairwise_tests.csv").iterrows():
+        assert f"{row['p_corrected']:.3f}" in r
 
 
-def test_report_p_values_come_from_the_computed_tests_csv_not_typed_text():
-    """MS-01: the old champion note hardcoded "recall p=0.0086" while the
-    computed value was 0.498. Every p-value in the report must now equal the
-    one in champion_pairwise_tests.csv, and the stale figure must be gone."""
-    import pandas as pd
-    from app.ml.generate_metrics_report import PROCESSED_DIR
-    path = PROCESSED_DIR / "champion_pairwise_tests.csv"
-    if not path.exists():
-        pytest.skip("no champion_pairwise_tests.csv on disk")
-    report = build_report_markdown()
-    assert "0.0086" not in report
-    for _, r in pd.read_csv(path).iterrows():
-        assert f"{r['p_corrected']:.3f}" in report
+def test_oracle_wording_is_derived_from_ci():
+    o = load_oracle_report()
+    if o is None:
+        pytest.skip("no Oracle report")
+    short, _ = roc_ci_verdict(o["oracle_metrics"]["roc_auc"], o["oracle_metrics_ci"]["roc_auc"])
+    assert f"Verdict: {short}" in build_report_markdown()
 
 
-def test_report_is_written_to_docs_current_metrics(tmp_path, monkeypatch):
-    """The script's main() writes docs/CURRENT_METRICS.md — verify the
-    write actually lands and the file's content matches what
-    build_report_markdown() returns, so `python -m
-    app.ml.generate_metrics_report` isn't silently a no-op."""
-    import app.ml.generate_metrics_report as gmr
+def test_roc_ci_verdict_three_cases():
+    assert roc_ci_verdict(0.46, {"ci_lower": 0.44, "ci_upper": 0.48})[0] == "significantly inverted ranking"
+    assert roc_ci_verdict(0.50, {"ci_lower": 0.48, "ci_upper": 0.52})[0] == "indistinguishable from random"
+    assert roc_ci_verdict(0.60, {"ci_lower": 0.55, "ci_upper": 0.65})[0].startswith("better than random")
 
-    fake_docs_dir = tmp_path / "docs"
-    fake_docs_dir.mkdir()
-    monkeypatch.setattr(gmr, "DOCS_DIR", fake_docs_dir)
 
-    gmr.main()
-
-    out_path = fake_docs_dir / "CURRENT_METRICS.md"
-    assert out_path.exists()
-    assert out_path.read_text() == build_report_markdown()
+def test_current_metrics_md_on_disk_is_up_to_date():
+    """docs == artifacts: the committed CURRENT_METRICS.md equals a fresh render."""
+    on_disk = (PROCESSED_DIR.parents[1] / "docs" / "CURRENT_METRICS.md").read_text()
+    assert on_disk == build_report_markdown()

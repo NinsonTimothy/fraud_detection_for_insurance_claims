@@ -69,7 +69,8 @@ def test_total_claim_amount_is_derived_from_components():
         {"injury_claim": 1000, "property_claim": 2000, "vehicle_claim": 3000, "total_claim_amount": 99},
         {"total_claim_amount": 500},
     ]))
-    assert df["total_claim_amount"].tolist() == [6000, 6000, 500]
+    # A6: a supplied total is never overwritten (it is rejected upstream instead)
+    assert df["total_claim_amount"].tolist() == [6000, 99, 500]
 
 
 def test_training_data_total_always_equals_components():
@@ -90,7 +91,8 @@ def test_api_schema_rejects_inconsistent_total():
 def test_no_action_text_claims_automatic_approval():
     for text in list(RECOMMENDED_ACTIONS.values()) + [DECISION_SUPPORT_NOTICE]:
         assert "auto-approv" not in text.lower()
-    assert all("recommend" in a.lower() for a in RECOMMENDED_ACTIONS.values())
+    assert all("priority" in a.lower() for a in RECOMMENDED_ACTIONS.values())
+    assert "investigator decides" in DECISION_SUPPORT_NOTICE
 
 
 def test_score_one_returns_decision_support_notice():

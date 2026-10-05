@@ -93,6 +93,6 @@ def test_proxy_feature_ablation_report_has_both_variants():
     off_row = df[df["variant"] == "proxy_features_off"].iloc[0]
     assert on_row["n_features"] == off_row["n_features"] + len(RISKY_FEATURE_COLUMNS)
     # Both variants must report real, finite metrics — not placeholders.
-    for col in ("holdout_recall", "holdout_roc_auc", "cv_recall_mean", "cv_roc_auc_mean"):
+    for col in ("pr_auc_mean", "roc_auc_mean"):
         assert 0.0 <= on_row[col] <= 1.0
         assert 0.0 <= off_row[col] <= 1.0

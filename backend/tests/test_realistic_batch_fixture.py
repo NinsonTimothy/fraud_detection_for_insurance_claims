@@ -101,14 +101,14 @@ def test_full_10k_file_is_rejected_by_score_batch_but_each_part_is_accepted(clie
     for path in (PART1_PATH, PART2_PATH):
         rows, r = _post_sample(client, path, n=50)
         assert r.status_code == 200
-        assert len(r.json()) == 50
+        assert len(r.json()["scored"]) == 50
 
 
 def test_sample_of_each_part_scores_successfully(client):
     for path in (PART1_PATH, PART2_PATH):
         rows, r = _post_sample(client, path)
         assert r.status_code == 200
-        scored = r.json()
+        scored = r.json()["scored"]
         assert len(scored) == len(rows)
         for row in scored:
             assert 0.0 <= row["fraud_probability"] <= 1.0
@@ -121,7 +121,7 @@ def test_blank_optional_fields_in_sample_are_retrievable_afterward(client):
     claim with a blank optional CSV cell must not 500 on retrieval."""
     rows, r = _post_sample(client, PART1_PATH)
     assert r.status_code == 200
-    claim_ids = [row["claim_id"] for row in r.json()]
+    claim_ids = [row["claim_id"] for row in r.json()["scored"]]
 
     had_blank = False
     for raw, claim_id in zip(rows, claim_ids):
@@ -148,7 +148,7 @@ def test_high_risk_pattern_rows_score_meaningfully_higher_than_low_risk_pattern_
     even though no single row is a guaranteed high- or low-risk case."""
     rows, r = _post_sample(client, PART1_PATH, n=1000)
     assert r.status_code == 200
-    scored = r.json()
+    scored = r.json()["scored"]
 
     high_like, low_like = [], []
     for raw, result in zip(rows, scored):

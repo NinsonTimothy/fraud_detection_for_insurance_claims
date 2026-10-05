@@ -39,8 +39,8 @@ def test_score_claim_submit_renders_probability_no_exception():
     at.button[0].click().run(timeout=30)
     assert not at.exception, [str(e) for e in at.exception]
 
-    headings = [md.value for md in at.markdown if "fraud probability" in md.value]
-    assert headings, "expected a '### NN.N% fraud probability' heading to render"
+    headings = [md.value for md in at.markdown if "Fraud-risk score" in md.value]
+    assert headings, "expected a '### Fraud-risk score N.NN' heading to render"
 
 
 def test_score_claim_has_real_date_inputs_not_hardcoded():
@@ -180,7 +180,7 @@ def test_overview_then_score_in_sequence_no_exception():
     score.run(timeout=30)
     score.button[0].click().run(timeout=30)
     assert not score.exception, [str(e) for e in score.exception]
-    assert any("fraud probability" in md.value for md in score.markdown)
+    assert any("Fraud-risk score" in md.value for md in score.markdown)
 
 
 def test_model_insights_renders_no_exception():
@@ -285,7 +285,7 @@ def test_overview_shows_bootstrap_ci_caption():
     captions = [c.value for c in at.caption]
     kpi_captions = "\n".join(m.value for m in at.markdown)
     assert "95% CI" in kpi_captions or any("95% CI" in c for c in captions)
-    assert any("Nested CV on the TRAINING split" in c for c in captions)
+    assert any("800 DEVELOPMENT rows" in c for c in captions)
 
 
 def test_batch_review_does_not_rescore_or_repersist_on_filter_change():
@@ -315,7 +315,85 @@ def test_batch_review_sample_button_renders_dashboard():
     next(b for b in at.button if b.label == "Load sample batch").click().run(timeout=60)
     assert not at.exception, [str(e) for e in at.exception]
     md = "\n".join(m.value for m in at.markdown)
-    for kpi in ("Claims in view", "Recommended for review", "High risk", "Value under review"):
+    for kpi in ("Claims in view", "Flagged for review", "High", "Medium", "Low", "Mean fraud-risk score"):
         assert kpi in md
     labels = {b.label for b in at.get("download_button")}
-    assert {"⬇ Full scored batch", "⬇ Top 20 suspicious"} <= labels
+    assert {"⬇ Filtered queue (CSV)", "⬇ Escalated list (CSV)"} <= labels
+
+
+
+# ============================ D4 (round 2) ==================================
+def _batch_with_sample():
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "batch_review.py"))
+    at.run(timeout=60)
+    next(b for b in at.button if b.label == "Load sample batch").click().run(timeout=120)
+    assert not at.exception, [str(e) for e in at.exception]
+    return at
+
+
+def _kpi(at, title):
+    import re
+    md = "".join(m.value for m in at.markdown).replace("\n", "")
+    m = re.search(re.escape(title) + r".*?>([\d,]+)<", md)
+    return int(m.group(1).replace(",", "")) if m else None
+
+
+def test_every_page_renders_without_exception():
+    for page in ("overview", "batch_review", "score_claim", "model_insights", "monitoring"):
+        at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / f"{page}.py"))
+        at.run(timeout=60)
+        assert not at.exception, (page, [str(e) for e in at.exception])
+
+
+def test_batch_band_filter_drives_kpis_and_tables():
+    at = _batch_with_sample()
+    total, high = _kpi(at, "Claims in view"), _kpi(at, ">High<")
+    ms = next(m for m in at.multiselect if m.label == "Risk band")
+    ms.set_value(["High"]).run(timeout=60)
+    assert not at.exception
+    assert _kpi(at, "Claims in view") == high <= total
+    top = next(d for d in at.dataframe if "fraud_probability" in d.value.columns)
+    assert set(top.value["risk_grade"]) <= {"High"}
+
+
+def test_batch_drill_down_opens_explanation_for_chosen_claim():
+    at = _batch_with_sample()
+    sb = next(s for s in at.selectbox if s.label.startswith("Claim to explain"))
+    target = sb.options[1]
+    sb.set_value(int(target.replace("Claim #", "")) if isinstance(target, str) else target).run(timeout=60)
+    md = "\n".join(m.value for m in at.markdown)
+    assert "Factors increasing risk" in md and "Factors reducing risk" in md
+
+
+def test_batch_rejects_inconsistent_total_rows():
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "batch_review.py"))
+    at.run(timeout=60)
+    csv = b"injury_claim,property_claim,vehicle_claim,total_claim_amount,incident_severity\n1000,2000,3000,6000,Major Damage\n1000,2000,3000,9999,Minor Damage\n"
+    at.file_uploader[0].set_value(("bad.csv", csv, "text/csv")).run(timeout=60)
+    assert not at.exception, [str(e) for e in at.exception]
+    assert any("1 row(s) rejected" in e.value for e in at.error)
+    assert _kpi(at, "Claims in view") == 1
+
+
+def test_score_form_validation_blocks_impossible_dates():
+    from datetime import date
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "score_claim.py"))
+    at.run(timeout=30)
+    next(d for d in at.date_input if d.label == "Incident date").set_value(date(2000, 1, 1)).run(timeout=30)
+    assert any("before the policy bind date" in e.value for e in at.error)
+    assert next(b for b in at.button if b.label == "Score claim").disabled
+
+
+def test_score_form_police_report_no_is_explained_as_no():
+    at = AppTest.from_file(str(DASHBOARD_ROOT / "app_pages" / "score_claim.py"))
+    at.run(timeout=30)
+    next(s for s in at.selectbox if s.label == "Police report available?").set_value("NO").run(timeout=30)
+    next(b for b in at.button if b.label == "Score claim").click().run(timeout=60)
+    assert not at.exception, [str(e) for e in at.exception]
+    res = at.session_state["last_score"]["result"]
+    allr = res["top_reasons"] + res["factors_increasing_risk"] + res["factors_reducing_risk"]
+    assert all("(0)" not in r["sentence"] for r in allr)
+    svc_reasons = [r for r in allr if r["feature"] == "police_report_available"]
+    assert all(r["display_value"] == "No" for r in svc_reasons)
+    md = "\n".join(m.value for m in at.markdown)
+    assert "Factors increasing risk" in md and "Recommended next step" in md and "auto-approved" not in md

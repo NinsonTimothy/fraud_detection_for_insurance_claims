@@ -43,7 +43,7 @@ def test_every_row_scores_successfully(client):
     with open(FIXTURE_PATH, "rb") as f:
         r = client.post("/score/batch", files={"file": ("sample_batch_claims.csv", f, "text/csv")})
     assert r.status_code == 200
-    rows = r.json()
+    rows = r.json()["scored"]
     with open(FIXTURE_PATH) as f:
         n_input_rows = sum(1 for _ in csv.DictReader(f))
     assert len(rows) == n_input_rows
@@ -60,7 +60,7 @@ def test_rows_with_blank_optional_fields_are_retrievable_afterward(client):
     with open(FIXTURE_PATH, "rb") as f:
         r = client.post("/score/batch", files={"file": ("sample_batch_claims.csv", f, "text/csv")})
     assert r.status_code == 200
-    claim_ids = [row["claim_id"] for row in r.json()]
+    claim_ids = [row["claim_id"] for row in r.json()["scored"]]
     for claim_id in claim_ids:
         detail = client.get(f"/claims/{claim_id}")
         assert detail.status_code == 200
@@ -80,7 +80,7 @@ def test_high_risk_pattern_rows_score_meaningfully_higher_than_low_risk_pattern_
     with open(FIXTURE_PATH, "rb") as f:
         r = client.post("/score/batch", files={"file": ("sample_batch_claims.csv", f, "text/csv")})
     assert r.status_code == 200
-    scored_rows = r.json()
+    scored_rows = r.json()["scored"]
 
     high_like, low_like = [], []
     for raw, scored in zip(raw_rows, scored_rows):
